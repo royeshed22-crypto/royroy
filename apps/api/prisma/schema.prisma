@@ -1,0 +1,195 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum UserStatus {
+  ACTIVE
+  DELETING
+  DELETED
+  SUSPENDED
+}
+
+enum ConsentType {
+  TERMS_AND_PRIVACY
+  AGE_VERIFICATION
+  MARKETING
+}
+
+enum ContactStatus {
+  ACTIVE
+  ARCHIVED
+}
+
+enum AnalysisStatus {
+  PENDING
+  PROCESSING
+  COMPLETED
+  FAILED
+  BLOCKED
+}
+
+enum Speaker {
+  SELF
+  OTHER
+  SYSTEM
+  UNKNOWN
+}
+
+enum ReplyTone {
+  PLAYFUL
+  DIRECT
+  WARM
+}
+
+enum RiskLevel {
+  LOW
+  MEDIUM
+  HIGH
+}
+
+model User {
+  id                 String     @id @default(uuid())
+  deviceId           String?    @unique @map("device_id")
+  displayName        String?    @map("display_name")
+  gender             String?
+  goals              String[]
+  communicationStyle String?    @map("communication_style")
+  language           String     @default("he")
+  timezone           String     @default("Asia/Jerusalem")
+  eloScore           Int        @default(1000) @map("elo_score")
+  streakDays         Int        @default(0) @map("streak_days")
+  isPro              Boolean    @default(false) @map("is_pro")
+  status             UserStatus @default(ACTIVE)
+  createdAt          DateTime   @default(now()) @map("created_at")
+  updatedAt          DateTime   @updatedAt @map("updated_at")
+  deletedAt          DateTime?  @map("deleted_at")
+
+  consents   Consent[]
+  contacts   Contact[]
+  analyses   Analysis[]
+  uploads    Upload[]
+
+  @@map("users")
+}
+
+model Consent {
+  id              String      @id @default(uuid())
+  userId          String      @map("user_id")
+  consentType     ConsentType @map("consent_type")
+  documentVersion String      @map("document_version")
+  accepted        Boolean
+  acceptedAt      DateTime    @default(now()) @map("accepted_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, consentType])
+  @@map("consents")
+}
+
+model Contact {
+  id               String        @id @default(uuid())
+  userId           String        @map("user_id")
+  displayName      String        @map("display_name")
+  platform         String?
+  notes            String?
+  status           ContactStatus @default(ACTIVE)
+  currentVibeScore Int?          @map("current_vibe_score")
+  lastActivityAt   DateTime?     @map("last_activity_at")
+  archivedAt       DateTime?     @map("archived_at")
+  createdAt        DateTime      @default(now()) @map("created_at")
+  updatedAt        DateTime      @updatedAt @map("updated_at")
+
+  user     User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  analyses Analysis[]
+
+  @@map("contacts")
+}
+
+model Upload {
+  id        String   @id @default(uuid())
+  userId    String   @map("user_id")
+  filename  String
+  path      String
+  mimeType  String   @map("mime_type")
+  sizeBytes Int      @map("size_bytes")
+  expiresAt DateTime @map("expires_at")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  user     User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  analysis Analysis? @relation(fields: [analysisId], references: [id])
+  analysisId String? @map("analysis_id")
+
+  @@map("uploads")
+}
+
+model Analysis {
+  id                String         @id @default(uuid())
+  userId            String         @map("user_id")
+  contactId         String?        @map("contact_id")
+  status            AnalysisStatus @default(PENDING)
+  language          String?
+  overallScore      Int?           @map("overall_score")
+  vibeScore         Int?           @map("vibe_score")
+  interestScore     Int?           @map("interest_score")
+  confidence        Float?
+  summary           String?
+  conversationStage String?        @map("conversation_stage")
+  recommendedAction Json?          @map("recommended_action")
+  communicationStyle Json?         @map("communication_style")
+  greenFlags        String[]       @map("green_flags")
+  redFlags          String[]       @map("red_flags")
+  disclaimer        String?
+  modelVersion      String?        @map("model_version")
+  promptVersion     String?        @map("prompt_version")
+  failureCode       String?        @map("failure_code")
+  createdAt         DateTime       @default(now()) @map("created_at")
+  completedAt       DateTime?      @map("completed_at")
+
+  user     User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  contact  Contact?          @relation(fields: [contactId], references: [id])
+  uploads  Upload[]
+  messages AnalysisMessage[]
+  replies  SuggestedReply[]
+
+  @@map("analyses")
+}
+
+model AnalysisMessage {
+  id           String   @id @default(uuid())
+  analysisId   String   @map("analysis_id")
+  speaker      Speaker
+  text         String
+  orderIndex   Int      @map("order_index")
+  score        Int?
+  sentiment    String?
+  explanation  String?
+  flags        Json?
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  analysis Analysis @relation(fields: [analysisId], references: [id], onDelete: Cascade)
+
+  @@unique([analysisId, orderIndex])
+  @@map("analysis_messages")
+}
+
+model SuggestedReply {
+  id          String    @id @default(uuid())
+  analysisId  String    @map("analysis_id")
+  userId      String    @map("user_id")
+  text        String
+  tone        ReplyTone
+  riskLevel   RiskLevel @map("risk_level")
+  explanation String
+  copiedAt    DateTime? @map("copied_at")
+  rating      Int?
+  createdAt   DateTime  @default(now()) @map("created_at")
+
+  analysis Analysis @relation(fields: [analysisId], references: [id], onDelete: Cascade)
+
+  @@map("suggested_replies")
+}
