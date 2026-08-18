@@ -183,6 +183,8 @@ model SuggestedReply {
   userId      String    @map("user_id")
   text        String
   tone        ReplyTone
+  /// How strongly the tone is expressed: 1 = subtle, 2 = clear, 3 = full send.
+  intensity   Int       @default(2)
   riskLevel   RiskLevel @map("risk_level")
   explanation String
   copiedAt    DateTime? @map("copied_at")

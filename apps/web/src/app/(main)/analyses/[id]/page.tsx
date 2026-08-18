@@ -1,5 +1,5 @@
 'use client';
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useRef } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import { ArrowLeft, CheckCircle, XCircle, Loader2, AlertTriangle, RefreshCw } from 'lucide-react';
 import { motion } from 'framer-motion';
@@ -7,9 +7,11 @@ import { toast } from 'sonner';
 import { Card } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { ScoreRing } from '@/components/analysis/score-ring';
-import { ReplyCard } from '@/components/analysis/reply-card';
+import { ReplyToneCard } from '@/components/analysis/reply-tone-card';
 import { analysesApi } from '@/lib/api';
 import { Analysis, AnalysisStatus } from '@/lib/types';
+
+const TONE_ORDER = ['PLAYFUL', 'DIRECT', 'WARM'] as const;
 
 const STATUS_CONFIG: Record<AnalysisStatus, { label: string; color: string }> = {
   PENDING:    { label: 'Queued',     color: 'text-white/50' },
@@ -25,8 +27,14 @@ export default function AnalysisPage() {
   const [analysis, setAnalysis] = useState<Analysis | null>(null);
   const [loading, setLoading] = useState(true);
   const [regenerating, setRegenerating] = useState(false);
+  const regenLock = useRef(false);
 
   const handleRegenerate = async () => {
+    // Ref rather than state: setState is async, so rapid clicks can slip through
+    // the disabled check before React re-renders.
+    if (regenLock.current) return;
+    regenLock.current = true;
+
     setRegenerating(true);
     try {
       const replies = await analysesApi.regenerateReplies(id);
@@ -35,6 +43,7 @@ export default function AnalysisPage() {
       toast.error(err?.response?.data?.error?.message ?? 'Could not generate replies. Try again.');
     } finally {
       setRegenerating(false);
+      regenLock.current = false;
     }
   };
 
@@ -200,16 +209,21 @@ export default function AnalysisPage() {
             </div>
 
             {analysis.replies && analysis.replies.length > 0 ? (
-              analysis.replies.map((reply) => (
-                <motion.div
-                  key={reply.id}
-                  initial={{ opacity: 0, y: 12 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  transition={{ delay: 0.1 }}
-                >
-                  <ReplyCard reply={reply} />
-                </motion.div>
-              ))
+              TONE_ORDER.map((tone, i) => {
+                const group = analysis.replies!.filter((r) => r.tone === tone);
+                if (group.length === 0) return null;
+
+                return (
+                  <motion.div
+                    key={tone}
+                    initial={{ opacity: 0, y: 10 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    transition={{ delay: i * 0.06 }}
+                  >
+                    <ReplyToneCard tone={tone} replies={group} />
+                  </motion.div>
+                );
+              })
             ) : (
               <Card className="flex flex-col items-center gap-3 py-8 text-center">
                 <p className="text-white/50 text-sm">

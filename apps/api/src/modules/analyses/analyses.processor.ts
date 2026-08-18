@@ -2,7 +2,10 @@ import { Process, Processor } from '@nestjs/bull';
 import { Logger } from '@nestjs/common';
 import { Job } from 'bull';
 import { PrismaService } from '../../prisma/prisma.service';
-import { AiService } from '../ai/ai.service';
+import { AiService, AnalysisResult, ConversationHistoryEntry } from '../ai/ai.service';
+
+/** Past analyses to feed back into the model as context. */
+const HISTORY_LIMIT = 5;
 
 @Processor('analyses')
 export class AnalysesProcessor {
@@ -26,7 +29,7 @@ export class AnalysesProcessor {
 
       const analysis = await this.prisma.analysis.findUnique({
         where: { id: analysisId },
-        include: { uploads: true },
+        include: { uploads: true, contact: true },
       });
 
       if (!analysis || analysis.uploads.length === 0) {
@@ -35,12 +38,21 @@ export class AnalysesProcessor {
 
       const user = await this.prisma.user.findUnique({ where: { id: userId } });
 
-      const imagePaths = analysis.uploads.map((u) => u.path);
-      const result = await this.aiService.analyzeConversation(imagePaths, {
-        communicationStyle: user?.communicationStyle,
-        goals: user?.goals,
-        language: user?.language,
-      });
+      // If the user already picked a contact, we can prime the model with their
+      // history up front. Otherwise we discover who this is from the screenshot.
+      let contactId = analysis.contactId;
+      let history = contactId ? await this.loadHistory(contactId, analysisId) : [];
+
+      const result = await this.aiService.analyzeConversation(
+        analysis.uploads.map((u) => u.path),
+        {
+          communicationStyle: user?.communicationStyle,
+          goals: user?.goals,
+          language: user?.language,
+        },
+        history,
+        analysis.contact?.displayName,
+      );
 
       if (result.safetyDecision === 'block') {
         await this.prisma.analysis.update({
@@ -54,10 +66,136 @@ export class AnalysesProcessor {
         return;
       }
 
-      await this.prisma.analysis.update({
+      // Link to a contact using the name read off the chat header, so repeat
+      // scans of the same person accumulate into one thread automatically.
+      if (!contactId && result.contactName) {
+        contactId = await this.resolveContact(userId, result.contactName);
+        if (contactId) {
+          history = await this.loadHistory(contactId, analysisId);
+          this.logger.log(`Linked analysis ${analysisId} to contact "${result.contactName}"`);
+        }
+      }
+
+      // Replies are generated before anything is marked COMPLETED — the client
+      // stops polling on that status, so writing it early surfaces an analysis
+      // with no replies attached.
+      const repliesResult = await this.aiService.generateReplies(
+        result,
+        result.extractedMessages ?? [],
+        history,
+      );
+      const replies = (repliesResult.replies ?? []).filter((r) => r.text?.trim());
+
+      await this.persistResult(analysisId, userId, contactId, result, replies);
+
+      this.logger.log(`Analysis ${analysisId} completed with ${replies.length} replies`);
+    } catch (err) {
+      const attempts = job.opts.attempts ?? 1;
+      const isFinalAttempt = job.attemptsMade + 1 >= attempts;
+      this.logger.error(
+        `Analysis ${analysisId} attempt ${job.attemptsMade + 1}/${attempts} failed: ${err.message}`,
+      );
+
+      if (isFinalAttempt) {
+        await this.prisma.analysis
+          .update({
+            where: { id: analysisId },
+            data: { status: 'FAILED', failureCode: 'PROCESSING_ERROR' },
+          })
+          .catch(() => {});
+      }
+      throw err;
+    }
+  }
+
+  /** Finds an existing contact by name (case-insensitive) or creates one. */
+  private async resolveContact(userId: string, rawName: string): Promise<string | null> {
+    const name = rawName.trim();
+    if (!name || name.length > 60) return null;
+
+    const existing = await this.prisma.contact.findFirst({
+      where: { userId, displayName: { equals: name, mode: 'insensitive' } },
+    });
+    if (existing) return existing.id;
+
+    const created = await this.prisma.contact.create({
+      data: { userId, displayName: name },
+    });
+    return created.id;
+  }
+
+  private async loadHistory(
+    contactId: string,
+    excludeAnalysisId: string,
+  ): Promise<ConversationHistoryEntry[]> {
+    const past = await this.prisma.analysis.findMany({
+      where: { contactId, status: 'COMPLETED', id: { not: excludeAnalysisId } },
+      orderBy: { createdAt: 'desc' },
+      take: HISTORY_LIMIT,
+      select: {
+        createdAt: true,
+        vibeScore: true,
+        interestScore: true,
+        conversationStage: true,
+        summary: true,
+      },
+    });
+
+    // Oldest first so the model reads the arc in order.
+    return past.reverse().map((p) => ({
+      date: p.createdAt,
+      vibeScore: p.vibeScore ?? undefined,
+      interestScore: p.interestScore ?? undefined,
+      stage: p.conversationStage ?? undefined,
+      summary: p.summary ?? undefined,
+    }));
+  }
+
+  /**
+   * Writes messages, replies, and the COMPLETED status in one transaction, so a
+   * client polling for completion never sees a half-populated analysis.
+   */
+  private async persistResult(
+    analysisId: string,
+    userId: string,
+    contactId: string | null,
+    result: AnalysisResult,
+    replies: AnalysisReplies,
+  ) {
+    const messages = (result.extractedMessages ?? []).map((m, idx) => ({
+      analysisId,
+      speaker: m.speaker === 'self' ? 'SELF' : m.speaker === 'other' ? 'OTHER' : 'UNKNOWN',
+      text: m.text,
+      orderIndex: idx,
+      sentiment: result.messageAnalysis?.find((ma) => ma.orderIndex === m.orderIndex)?.sentiment ?? 'neutral',
+      score: result.messageAnalysis?.find((ma) => ma.orderIndex === m.orderIndex)?.score ?? null,
+      explanation: result.messageAnalysis?.find((ma) => ma.orderIndex === m.orderIndex)?.note ?? null,
+    }));
+
+    await this.prisma.$transaction(async (tx) => {
+      if (messages.length > 0) {
+        await tx.analysisMessage.createMany({ data: messages as any });
+      }
+
+      if (replies.length > 0) {
+        await tx.suggestedReply.createMany({
+          data: replies.map((r) => ({
+            analysisId,
+            userId,
+            text: r.text,
+            tone: r.tone as any,
+            intensity: Math.min(3, Math.max(1, Math.round(r.intensity ?? 2))),
+            riskLevel: r.riskLevel as any,
+            explanation: r.explanation,
+          })),
+        });
+      }
+
+      await tx.analysis.update({
         where: { id: analysisId },
         data: {
           status: 'COMPLETED',
+          contactId,
           language: result.language,
           overallScore: result.scores.overall,
           vibeScore: result.scores.vibe,
@@ -70,80 +208,24 @@ export class AnalysesProcessor {
           greenFlags: result.greenFlags,
           redFlags: result.redFlags,
           disclaimer: result.disclaimer,
-          modelVersion: 'gpt-4o',
-          promptVersion: '1.0',
+          promptVersion: '2.0',
           completedAt: new Date(),
         },
       });
 
-      // Save extracted messages
-      if (result.extractedMessages?.length > 0) {
-        const messageData = result.extractedMessages.map((m, idx) => {
-          const msgAnalysis = result.messageAnalysis?.find((ma) => ma.orderIndex === m.orderIndex);
-          return {
-            analysisId,
-            speaker: m.speaker === 'self' ? 'SELF' : m.speaker === 'other' ? 'OTHER' : 'UNKNOWN',
-            text: m.text,
-            orderIndex: idx,
-            sentiment: msgAnalysis?.sentiment ?? 'neutral',
-            score: msgAnalysis?.score ?? null,
-            explanation: msgAnalysis?.note ?? null,
-          };
-        });
-
-        await this.prisma.analysisMessage.createMany({ data: messageData as any });
-      }
-
-      // Generate replies
-      const repliesResult = await this.aiService.generateReplies(result, result.extractedMessages);
-      const validReplies = (repliesResult.replies ?? []).filter((r) => r.text?.trim());
-      if (validReplies.length > 0) {
-        await this.prisma.suggestedReply.createMany({
-          data: validReplies.map((r) => ({
-            analysisId,
-            userId,
-            text: r.text,
-            tone: r.tone as any,
-            riskLevel: r.riskLevel as any,
-            explanation: r.explanation,
-          })),
+      if (contactId) {
+        await tx.contact.update({
+          where: { id: contactId },
+          data: { currentVibeScore: result.scores.vibe, lastActivityAt: new Date() },
         });
       }
 
-      // Update contact vibe score
-      if (analysis.contactId) {
-        await this.prisma.contact.update({
-          where: { id: analysis.contactId },
-          data: {
-            currentVibeScore: result.scores.vibe,
-            lastActivityAt: new Date(),
-          },
-        });
-      }
-
-      // Update user ELO
-      const eloGain = Math.round((result.scores.overall - 50) / 10);
-      await this.prisma.user.update({
+      await tx.user.update({
         where: { id: userId },
-        data: { eloScore: { increment: eloGain } },
+        data: { eloScore: { increment: Math.round((result.scores.overall - 50) / 10) } },
       });
-
-      this.logger.log(`Analysis ${analysisId} completed successfully`);
-    } catch (err) {
-      // Only mark FAILED once BullMQ has exhausted its retries — otherwise the
-      // UI shows a failure for an attempt that is about to be retried.
-      const isFinalAttempt = job.attemptsMade + 1 >= (job.opts.attempts ?? 1);
-      this.logger.error(
-        `Analysis ${analysisId} attempt ${job.attemptsMade + 1}/${job.opts.attempts ?? 1} failed: ${err.message}`,
-      );
-
-      if (isFinalAttempt) {
-        await this.prisma.analysis.update({
-          where: { id: analysisId },
-          data: { status: 'FAILED', failureCode: 'PROCESSING_ERROR' },
-        }).catch(() => {});
-      }
-      throw err;
-    }
+    });
   }
 }
+
+type AnalysisReplies = Awaited<ReturnType<AiService['generateReplies']>>['replies'];

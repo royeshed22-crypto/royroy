@@ -68,6 +68,8 @@ export interface SuggestedReply {
   id: string;
   text: string;
   tone: ReplyTone;
+  /** 1 = subtle, 2 = clear, 3 = full send. */
+  intensity: number;
   riskLevel: RiskLevel;
   explanation: string;
   copiedAt?: string;

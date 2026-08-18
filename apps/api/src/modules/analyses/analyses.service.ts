@@ -59,7 +59,7 @@ export class AnalysesService {
       where: { id: analysisId },
       include: {
         messages: { orderBy: { orderIndex: 'asc' } },
-        replies: { orderBy: { createdAt: 'asc' } },
+        replies: { orderBy: [{ tone: 'asc' }, { intensity: 'asc' }] },
         contact: { select: { id: true, displayName: true, platform: true } },
       },
     });
@@ -118,6 +118,30 @@ export class AnalysesService {
       text: m.text,
     }));
 
+    // Same contact history the processor uses, so a regenerated set is as
+    // well-informed as the original.
+    const history = analysis.contactId
+      ? (
+          await this.prisma.analysis.findMany({
+            where: { contactId: analysis.contactId, status: 'COMPLETED', id: { not: analysisId } },
+            orderBy: { createdAt: 'desc' },
+            take: 5,
+            select: {
+              createdAt: true, vibeScore: true, interestScore: true,
+              conversationStage: true, summary: true,
+            },
+          })
+        )
+          .reverse()
+          .map((p) => ({
+            date: p.createdAt,
+            vibeScore: p.vibeScore ?? undefined,
+            interestScore: p.interestScore ?? undefined,
+            stage: p.conversationStage ?? undefined,
+            summary: p.summary ?? undefined,
+          }))
+      : [];
+
     const result = await this.aiService.generateReplies(
       {
         scores: {
@@ -132,11 +156,14 @@ export class AnalysesService {
         recommendedAction: analysis.recommendedAction as any,
       } as any,
       lastMessages,
+      history,
     );
 
     const valid = (result.replies ?? []).filter((r) => r.text?.trim());
     if (valid.length === 0) {
-      throw new BadRequestException('Reply generation is temporarily unavailable. Please try again.');
+      throw new BadRequestException(
+        'Could not generate replies right now. The Gemini free tier may have hit its daily quota.',
+      );
     }
 
     await this.prisma.suggestedReply.deleteMany({ where: { analysisId } });
@@ -146,6 +173,7 @@ export class AnalysesService {
         userId,
         text: r.text,
         tone: r.tone as any,
+        intensity: Math.min(3, Math.max(1, Math.round(r.intensity ?? 2))),
         riskLevel: r.riskLevel as any,
         explanation: r.explanation,
       })),
@@ -153,7 +181,7 @@ export class AnalysesService {
 
     return this.prisma.suggestedReply.findMany({
       where: { analysisId },
-      orderBy: { createdAt: 'asc' },
+      orderBy: [{ tone: 'asc' }, { intensity: 'asc' }],
     });
   }
 }

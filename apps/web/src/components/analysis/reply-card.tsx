@@ -1,21 +1,27 @@
 'use client';
 import { useState } from 'react';
-import { Copy, Check, Zap, Target, Heart } from 'lucide-react';
+import { Copy, Check } from 'lucide-react';
 import { toast } from 'sonner';
 import { SuggestedReply } from '@/lib/types';
 import { analysesApi } from '@/lib/api';
 import { cn } from '@/lib/utils';
 
-const TONE_CONFIG = {
-  PLAYFUL: { icon: Zap, label: 'Playful', color: 'text-yellow-400', bg: 'bg-yellow-500/10 border-yellow-500/20' },
-  DIRECT:  { icon: Target, label: 'Direct',  color: 'text-blue-400',   bg: 'bg-blue-500/10 border-blue-500/20' },
-  WARM:    { icon: Heart,  label: 'Warm',    color: 'text-pink-400',   bg: 'bg-pink-500/10 border-pink-500/20' },
+const TONE_ACCENT = {
+  PLAYFUL: { dot: 'bg-yellow-400', text: 'text-yellow-400', border: 'border-yellow-500/20' },
+  DIRECT:  { dot: 'bg-blue-400',   text: 'text-blue-400',   border: 'border-blue-500/20' },
+  WARM:    { dot: 'bg-pink-400',   text: 'text-pink-400',   border: 'border-pink-500/20' },
+};
+
+const INTENSITY_LABEL: Record<number, string> = {
+  1: 'Subtle',
+  2: 'Clear',
+  3: 'Full send',
 };
 
 const RISK_COLORS = {
-  LOW:    'bg-emerald-500/20 text-emerald-400',
-  MEDIUM: 'bg-yellow-500/20 text-yellow-400',
-  HIGH:   'bg-rose-500/20 text-rose-400',
+  LOW:    'text-emerald-400/70',
+  MEDIUM: 'text-yellow-400/70',
+  HIGH:   'text-rose-400/70',
 };
 
 interface ReplyCardProps {
@@ -24,26 +30,40 @@ interface ReplyCardProps {
 
 export function ReplyCard({ reply }: ReplyCardProps) {
   const [copied, setCopied] = useState(false);
-  const cfg = TONE_CONFIG[reply.tone];
-  const Icon = cfg.icon;
+  const accent = TONE_ACCENT[reply.tone];
+  const level = Math.min(3, Math.max(1, reply.intensity ?? 2));
 
   const handleCopy = async () => {
     await navigator.clipboard.writeText(reply.text);
     setCopied(true);
-    toast.success('Copied to clipboard');
+    toast.success('Copied');
     try { await analysesApi.markCopied(reply.id); } catch { /* silent */ }
     setTimeout(() => setCopied(false), 2000);
   };
 
   return (
-    <div className={cn('glass-card border p-4 flex flex-col gap-3', cfg.bg)}>
+    <div className={cn('glass-card border p-4 flex flex-col gap-3', accent.border)}>
       <div className="flex items-center justify-between">
-        <div className={cn('flex items-center gap-1.5 text-sm font-semibold', cfg.color)}>
-          <Icon size={14} />
-          {cfg.label}
+        {/* Intensity meter */}
+        <div className="flex items-center gap-2">
+          <div className="flex gap-1">
+            {[1, 2, 3].map((i) => (
+              <span
+                key={i}
+                className={cn(
+                  'h-1.5 w-4 rounded-full transition-colors',
+                  i <= level ? accent.dot : 'bg-white/15',
+                )}
+              />
+            ))}
+          </div>
+          <span className={cn('text-[11px] font-medium', accent.text)}>
+            {INTENSITY_LABEL[level]}
+          </span>
         </div>
-        <span className={cn('text-[10px] px-2 py-0.5 rounded-full font-medium', RISK_COLORS[reply.riskLevel])}>
-          {reply.riskLevel} RISK
+
+        <span className={cn('text-[10px] font-medium', RISK_COLORS[reply.riskLevel])}>
+          {reply.riskLevel}
         </span>
       </div>
 
@@ -61,7 +81,7 @@ export function ReplyCard({ reply }: ReplyCardProps) {
         )}
       >
         {copied ? <Check size={14} /> : <Copy size={14} />}
-        {copied ? 'Copied!' : 'Copy'}
+        {copied ? 'Copied' : 'Copy'}
       </button>
     </div>
   );

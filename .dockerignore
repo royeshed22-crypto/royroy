@@ -1,0 +1,15 @@
+**/node_modules
+**/dist
+**/.next
+**/.turbo
+
+# Stored screenshots — the path only, not the uploads source module.
+apps/api/uploads
+
+.git
+.env
+**/.env
+**/.env.local
+!.env.example
+*.log
+README.md

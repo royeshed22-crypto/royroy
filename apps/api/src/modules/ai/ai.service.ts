@@ -5,8 +5,19 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { SYSTEM_PROMPT, REPLY_SYSTEM_PROMPT } from './prompts/analysis.prompt';
 
+/** A past analysis with the same person, used to give the model continuity. */
+export interface ConversationHistoryEntry {
+  date: Date;
+  vibeScore?: number;
+  interestScore?: number;
+  stage?: string;
+  summary?: string;
+}
+
 export interface AnalysisResult {
   language: string;
+  /** Name read off the chat header, when the screenshot shows one. */
+  contactName?: string | null;
   extractedMessages: Array<{ speaker: 'self' | 'other'; text: string; orderIndex: number }>;
   summary: string;
   scores: { overall: number; vibe: number; interest: number; confidence: number };
@@ -24,6 +35,8 @@ export interface AnalysisResult {
 export interface ReplyResult {
   replies: Array<{
     tone: 'PLAYFUL' | 'DIRECT' | 'WARM';
+    /** 1 = subtle, 2 = clear, 3 = full send. */
+    intensity: number;
     text: string;
     riskLevel: 'LOW' | 'MEDIUM' | 'HIGH';
     explanation: string;
@@ -34,37 +47,110 @@ export interface ReplyResult {
 export class AiService {
   private genAI: GoogleGenerativeAI;
   private readonly logger = new Logger(AiService.name);
-  private readonly model: string;
+
+  /** Tried in order. A single model alias can sit at 503 for minutes at a time. */
+  private readonly models: string[];
 
   constructor(private config: ConfigService) {
     this.genAI = new GoogleGenerativeAI(config.get('GEMINI_API_KEY'));
-    this.model = config.get('GEMINI_MODEL', 'gemini-flash-latest');
+
+    const primary = config.get('GEMINI_MODEL', 'gemini-3.6-flash');
+    const fallbacks = (config.get('GEMINI_FALLBACK_MODELS', 'gemini-3.5-flash,gemini-flash-latest') as string)
+      .split(',')
+      .map((m) => m.trim())
+      .filter(Boolean);
+
+    this.models = [primary, ...fallbacks.filter((m) => m !== primary)];
   }
 
   /**
-   * Gemini returns 503 when the model is under load. Retry with exponential
-   * backoff before giving up — these spikes are usually a few seconds long.
+   * 503 means the model is momentarily busy and retrying the same one works.
+   * 429 means the key's quota for that model is spent — retrying only burns
+   * more of it, so we skip straight to the next model in the chain.
    */
-  private async withRetry<T>(label: string, fn: () => Promise<T>, attempts = 4): Promise<T> {
+  private classifyError(err: any): 'overloaded' | 'quota' | 'fatal' {
+    const msg = err?.message ?? '';
+    if (/quota|429|rate limit/i.test(msg)) return 'quota';
+    if (/50[023]|overloaded|high demand|unavailable/i.test(msg)) return 'overloaded';
+    return 'fatal';
+  }
+
+  /** True once every configured model has reported its quota exhausted. */
+  isQuotaExhausted(err: any): boolean {
+    return this.classifyError(err) === 'quota';
+  }
+
+  /**
+   * Runs `call` against each configured model in turn, retrying transient
+   * failures (503 under load, rate limits) with exponential backoff before
+   * moving on to the next model.
+   */
+  private async generate(
+    label: string,
+    call: (model: ReturnType<GoogleGenerativeAI['getGenerativeModel']>) => Promise<any>,
+    attemptsPerModel = 3,
+  ): Promise<any> {
     let lastErr: any;
-    for (let i = 0; i < attempts; i++) {
-      try {
-        return await fn();
-      } catch (err) {
-        lastErr = err;
-        const retryable = /50[023]|overloaded|high demand|rate limit|429/i.test(err?.message ?? '');
-        if (!retryable || i === attempts - 1) break;
-        const delay = 1500 * Math.pow(2, i);
-        this.logger.warn(`${label} attempt ${i + 1} failed (${err.message?.slice(0, 80)}), retrying in ${delay}ms`);
-        await new Promise((r) => setTimeout(r, delay));
+
+    for (const modelName of this.models) {
+      const model = this.genAI.getGenerativeModel({
+        model: modelName,
+        generationConfig: { responseMimeType: 'application/json' },
+      });
+
+      for (let i = 0; i < attemptsPerModel; i++) {
+        try {
+          return await call(model);
+        } catch (err) {
+          lastErr = err;
+          const kind = this.classifyError(err);
+
+          if (kind === 'fatal') throw err;
+
+          if (kind === 'quota') {
+            this.logger.warn(`${label}: ${modelName} quota exhausted, skipping to next model`);
+            break;
+          }
+
+          const isLastAttempt = i === attemptsPerModel - 1;
+          if (isLastAttempt) {
+            this.logger.warn(`${label}: ${modelName} overloaded, trying next model`);
+            break;
+          }
+
+          const delay = 1200 * Math.pow(2, i);
+          this.logger.warn(`${label}: ${modelName} busy, retrying in ${delay}ms`);
+          await new Promise((r) => setTimeout(r, delay));
+        }
       }
     }
+
     throw lastErr;
+  }
+
+  /** Renders past analyses into a compact block the model can read. */
+  private formatHistory(history: ConversationHistoryEntry[], contactName?: string): string {
+    if (!history?.length) return '';
+
+    const lines = history.map((h) => {
+      const when = h.date.toLocaleDateString('en-GB');
+      const scores = `vibe ${h.vibeScore ?? '?'}, interest ${h.interestScore ?? '?'}`;
+      return `- ${when} (${scores}, stage: ${h.stage ?? 'unknown'}): ${h.summary ?? 'no summary'}`;
+    });
+
+    return `
+
+=== EARLIER CONVERSATIONS WITH ${contactName ?? 'THIS PERSON'} ===
+Oldest first. Use this to judge direction, not just the current screenshot.
+${lines.join('\n')}
+`;
   }
 
   async analyzeConversation(
     imagePaths: string[],
     userPreferences: { communicationStyle?: string; goals?: string[]; language?: string },
+    history: ConversationHistoryEntry[] = [],
+    contactName?: string,
   ): Promise<AnalysisResult> {
     const imageParts = await Promise.all(
       imagePaths.map(async (imagePath) => {
@@ -82,15 +168,11 @@ export class AiService {
       : '';
 
     try {
-      const gemini = this.genAI.getGenerativeModel({
-        model: this.model,
-        generationConfig: { responseMimeType: 'application/json' },
-      });
+      const historyBlock = this.formatHistory(history, contactName);
+      const prompt = `${SYSTEM_PROMPT}${userContext}${historyBlock}\n\nAnalyze this dating conversation from ${imagePaths.length} screenshot(s). Read the name from the chat header, extract all messages, and provide a full analysis. Return valid JSON only.`;
 
-      const prompt = `${SYSTEM_PROMPT}${userContext}\n\nAnalyze this dating conversation from ${imagePaths.length} screenshot(s). Extract all messages and provide a full analysis. Return valid JSON only.`;
-
-      const result = await this.withRetry('analyzeConversation', () =>
-        gemini.generateContent([prompt, ...imageParts]),
+      const result = await this.generate('analyzeConversation', (model) =>
+        model.generateContent([prompt, ...imageParts]),
       );
       const raw = result.response.text();
       const parsed: AnalysisResult = JSON.parse(raw);
@@ -104,6 +186,11 @@ export class AiService {
       return parsed;
     } catch (err) {
       this.logger.error('Gemini analysis failed', err);
+      if (this.isQuotaExhausted(err)) {
+        throw new BadRequestException(
+          'Daily Gemini quota is used up. It resets at midnight Pacific time.',
+        );
+      }
       throw new BadRequestException('AI analysis failed. Please try again.');
     }
   }
@@ -111,6 +198,7 @@ export class AiService {
   async generateReplies(
     analysisResult: AnalysisResult,
     lastMessages: Array<{ speaker: string; text: string }>,
+    history: ConversationHistoryEntry[] = [],
   ): Promise<ReplyResult> {
     const lastFew = lastMessages
       .slice(-6)
@@ -118,13 +206,8 @@ export class AiService {
       .join('\n');
 
     try {
-      const gemini = this.genAI.getGenerativeModel({
-        model: this.model,
-        generationConfig: { responseMimeType: 'application/json' },
-      });
-
       const prompt = `${REPLY_SYSTEM_PROMPT}
-
+${this.formatHistory(history, analysisResult.contactName ?? undefined)}
 CONVERSATION CONTEXT:
 Last messages:
 ${lastFew}
@@ -140,7 +223,7 @@ Recommended action: ${analysisResult.recommendedAction?.type}
 
 Generate 3 reply options (playful, direct, warm) that respond naturally to their last message.`;
 
-      const result = await this.withRetry('generateReplies', () => gemini.generateContent(prompt));
+      const result = await this.generate('generateReplies', (model) => model.generateContent(prompt));
       return JSON.parse(result.response.text());
     } catch (err) {
       // Return no replies rather than empty placeholders — the caller decides
@@ -156,11 +239,6 @@ Generate 3 reply options (playful, direct, warm) that respond naturally to their
     tone: string,
     language = 'he',
   ): Promise<{ replies: Array<{ text: string; tone: string; riskLevel: string; explanation: string }> }> {
-    const gemini = this.genAI.getGenerativeModel({
-      model: this.model,
-      generationConfig: { responseMimeType: 'application/json' },
-    });
-
     const prompt = `${REPLY_SYSTEM_PROMPT}
 
 Generate 3 reply options for this message/situation.
@@ -171,7 +249,7 @@ Language: ${language === 'he' ? 'Hebrew (עברית)' : 'English'}
 
 Return valid JSON with replies array.`;
 
-    const result = await this.withRetry('generateQuickReply', () => gemini.generateContent(prompt));
+    const result = await this.generate('generateQuickReply', (model) => model.generateContent(prompt));
     return JSON.parse(result.response.text());
   }
 }
