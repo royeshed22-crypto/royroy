@@ -1,7 +1,6 @@
 'use client';
 import { useEffect, useState, useRef } from 'react';
 import { useParams, useRouter } from 'next/navigation';
-import Link from 'next/link';
 import {
   ArrowLeft, CheckCircle, XCircle, Loader2, AlertTriangle, RefreshCw, Sparkles,
 } from 'lucide-react';
@@ -143,68 +142,29 @@ export default function AnalysisPage() {
         </Card>
       )}
 
-      {/* An import has no scores or replies — just report what landed. */}
-      {analysis.status === 'COMPLETED' && analysis.isImport && (
+      {analysis.status === 'COMPLETED' && (
         <div className="flex flex-col gap-5 px-5 pb-8">
-          <Card className="flex flex-col items-center gap-4 py-8 text-center">
-            <div className="w-14 h-14 rounded-2xl bg-brand-gradient flex items-center justify-center">
-              <CheckCircle size={26} className="text-white" />
-            </div>
-            <div>
-              <h3 className="text-white font-bold text-lg">Conversation saved</h3>
-              <p className="text-white/50 text-sm mt-1">
-                {analysis.contact?.displayName} now has history behind them.
-              </p>
-            </div>
-
-            <div className="grid grid-cols-3 gap-3 w-full max-w-sm pt-2">
-              {[
-                { label: 'Read', value: analysis.messagesFound ?? 0 },
-                { label: 'New', value: analysis.messagesNew ?? 0 },
-                { label: 'Total', value: analysis.totalMessages ?? 0 },
-              ].map(({ label, value }) => (
-                <div key={label} className="flex flex-col items-center gap-0.5">
-                  <span className="text-2xl font-black text-white tabular-nums">{value}</span>
-                  <span className="text-[10px] text-white/40 uppercase tracking-wide">{label}</span>
-                </div>
-              ))}
-            </div>
-
-            {(analysis.messagesFound ?? 0) > (analysis.messagesNew ?? 0) && (
-              <p className="text-white/35 text-xs max-w-xs">
-                {(analysis.messagesFound ?? 0) - (analysis.messagesNew ?? 0)} messages
-                were already known and got merged rather than duplicated.
-              </p>
-            )}
-          </Card>
-
-          {analysis.messages && analysis.messages.length > 0 && (
-            <ErrorBoundary label="The conversation">
-              <ConversationView messages={analysis.messages} />
-            </ErrorBoundary>
+          {/* An import runs the full analysis too — reading the whole history is
+              exactly what makes the replies worth having. This just reports what
+              landed before the usual result. */}
+          {analysis.isImport && (
+            <Card className="border-brand-500/20 bg-brand-500/5 flex items-center gap-4 py-4">
+              <div className="w-10 h-10 rounded-xl bg-brand-gradient flex items-center justify-center shrink-0">
+                <CheckCircle size={19} className="text-white" />
+              </div>
+              <div className="flex-1">
+                <p className="text-white font-semibold text-sm">Conversation saved</p>
+                <p className="text-white/50 text-xs mt-0.5">
+                  {analysis.messagesNew ?? 0} new of {analysis.messagesFound ?? 0} read
+                  {(analysis.messagesFound ?? 0) > (analysis.messagesNew ?? 0) &&
+                    ', duplicates merged'}
+                  {' · '}
+                  {analysis.totalMessages ?? 0} on the timeline
+                </p>
+              </div>
+            </Card>
           )}
 
-          {analysis.contact && (
-            <ErrorBoundary label="What DUGRIZZ knows">
-              <MemoryPanel
-                contactId={analysis.contact.id}
-                contactName={analysis.contact.displayName}
-                memory={analysis.contact.aiMemory}
-                defaultOpen
-              />
-            </ErrorBoundary>
-          )}
-
-          <Link href="/scan">
-            <button className="w-full brand-btn py-3.5 text-base">
-              Scan new messages
-            </button>
-          </Link>
-        </div>
-      )}
-
-      {analysis.status === 'COMPLETED' && !analysis.isImport && (
-        <div className="flex flex-col gap-5 px-5 pb-8">
           {/* Scores */}
           <div className="flex justify-around py-4">
             {[

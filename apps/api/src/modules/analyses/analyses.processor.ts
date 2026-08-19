@@ -162,62 +162,6 @@ export class AnalysesProcessor {
     }
   }
 
-  /**
-   * A bulk import just records history and builds initial memory. There is
-   * nothing to reply to, so scoring is skipped.
-   */
-  private async finishImport(
-    analysisId: string,
-    contactId: string,
-    userId: string,
-    ingest: { found: number; added: number; duplicates: number; totalOnTimeline: number },
-    language: string,
-  ) {
-    const contact = await this.prisma.contact.findUnique({ where: { id: contactId } });
-    const existing = this.memoryUpdater.parse(contact?.aiMemory);
-
-    const recent = await this.prisma.conversationMessage.findMany({
-      where: { contactId },
-      orderBy: { orderIndex: 'desc' },
-      take: 60,
-      select: { speaker: true, text: true },
-    });
-
-    const update = await this.memoryUpdater.computeUpdate(existing, recent.reverse(), {
-      contactName: contact?.displayName,
-    });
-    const memory = this.memoryUpdater.merge(existing, update);
-
-    await this.prisma.$transaction(async (tx) => {
-      await tx.contact.update({
-        where: { id: contactId },
-        data: {
-          aiMemory: memory as any,
-          summary: memory.summary || undefined,
-          stage: (update?.stage?.toUpperCase() as any) ?? undefined,
-          lastActivityAt: new Date(),
-        },
-      });
-
-      await tx.analysis.update({
-        where: { id: analysisId },
-        data: {
-          status: 'COMPLETED',
-          contactId,
-          language,
-          summary: `Imported ${ingest.added} messages. The conversation history is now saved.`,
-          messagesFound: ingest.found,
-          messagesNew: ingest.added,
-          completedAt: new Date(),
-        },
-      });
-    });
-
-    this.logger.log(
-      `Import ${analysisId}: ${ingest.added} of ${ingest.found} messages added, ${ingest.totalOnTimeline} on timeline`,
-    );
-  }
-
   /** Finds an existing contact by name (case-insensitive) or creates one. */
   private async resolveContact(userId: string, rawName: string): Promise<string | null> {
     const name = rawName.trim().slice(0, 60);
