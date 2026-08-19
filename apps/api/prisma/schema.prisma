@@ -96,7 +96,11 @@ model Contact {
   userId           String        @map("user_id")
   displayName      String        @map("display_name")
   platform         String?
+  /// Free-text the user maintains: how they met, what's going on, anything.
   notes            String?
+  /// Facts the model accumulates across analyses — inside jokes, things she
+  /// mentioned, running threads. Shape: see ContactMemory in ai.service.ts.
+  aiMemory         Json?         @map("ai_memory")
   status           ContactStatus @default(ACTIVE)
   currentVibeScore Int?          @map("current_vibe_score")
   lastActivityAt   DateTime?     @map("last_activity_at")
@@ -132,6 +136,9 @@ model Analysis {
   userId            String         @map("user_id")
   contactId         String?        @map("contact_id")
   status            AnalysisStatus @default(PENDING)
+  /// What the user typed before scanning: what a photo showed, what a voice
+  /// note said, anything the screenshots can't convey on their own.
+  userContext       String?        @map("user_context")
   language          String?
   overallScore      Int?           @map("overall_score")
   vibeScore         Int?           @map("vibe_score")

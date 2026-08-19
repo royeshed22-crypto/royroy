@@ -3,7 +3,7 @@ import { useState, useRef, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { toast } from 'sonner';
 import { motion, AnimatePresence } from 'framer-motion';
-import { ScanLine, Check } from 'lucide-react';
+import { ScanLine, Check, Sparkles } from 'lucide-react';
 import { Dropzone } from '@/components/upload/dropzone';
 import { uploadsApi, analysesApi, contactsApi } from '@/lib/api';
 import { cn } from '@/lib/utils';
@@ -21,6 +21,7 @@ const PHASE_ORDER: Array<Exclude<Phase, 'idle'>> = ['uploading', 'queuing', 'ana
 export default function ScanPage() {
   const [files, setFiles] = useState<File[]>([]);
   const [contactName, setContactName] = useState('');
+  const [context, setContext] = useState('');
   const [phase, setPhase] = useState<Phase>('idle');
   const [progress, setProgress] = useState(0);
   const router = useRouter();
@@ -51,7 +52,7 @@ export default function ScanPage() {
         contactId = contact.id;
       }
 
-      const analysis = await analysesApi.create(uploadIds, contactId);
+      const analysis = await analysesApi.create(uploadIds, contactId, context.trim() || undefined);
 
       setPhase('analyzing');
       router.push(`/analyses/${analysis.id}`);
@@ -78,16 +79,46 @@ export default function ScanPage() {
         <Dropzone files={files} onChange={setFiles} />
       </div>
 
-      <div className={cn('flex flex-col gap-2 transition-opacity duration-300', busy && 'opacity-40 pointer-events-none')}>
-        <label className="text-sm text-white/60 font-medium">Who is this? (optional)</label>
-        <input
-          value={contactName}
-          onChange={(e) => setContactName(e.target.value)}
-          placeholder="e.g. Alex from Tinder"
-          className="input-base"
-          maxLength={50}
-          disabled={busy}
-        />
+      <div className={cn('flex flex-col gap-5 transition-opacity duration-300', busy && 'opacity-40 pointer-events-none')}>
+        <div className="flex flex-col gap-2">
+          <label className="text-sm text-white/60 font-medium">Who is this? (optional)</label>
+          <input
+            value={contactName}
+            onChange={(e) => setContactName(e.target.value)}
+            placeholder="Leave blank and we'll read it off the chat"
+            className="input-base"
+            maxLength={50}
+            disabled={busy}
+          />
+        </div>
+
+        {/* The screenshots can't show a voice note or what a photo contained,
+            and that context changes the read more than anything else. */}
+        <div className="flex flex-col gap-2">
+          <label className="text-sm text-white/60 font-medium">
+            Anything the screenshots don't show?
+          </label>
+          <textarea
+            value={context}
+            onChange={(e) => setContext(e.target.value)}
+            placeholder={
+              'She sent a selfie at the beach\n' +
+              'Voice note was her laughing, sounded into it\n' +
+              'We matched 3 weeks ago, met once for coffee'
+            }
+            rows={4}
+            maxLength={4000}
+            disabled={busy}
+            className="input-base resize-none leading-relaxed text-sm"
+          />
+          <div className="flex items-start gap-1.5">
+            <Sparkles size={12} className="text-brand-400 mt-0.5 shrink-0" />
+            <p className="text-white/35 text-xs leading-relaxed">
+              Photos, voice notes, history between you. This lands harder than the
+              messages themselves.
+            </p>
+          </div>
+        </div>
       </div>
 
       {/* Progress panel */}

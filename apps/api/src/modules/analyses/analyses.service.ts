@@ -14,7 +14,10 @@ export class AnalysesService {
     @InjectQueue('analyses') private analysesQueue: Queue,
   ) {}
 
-  async create(userId: string, dto: { uploadIds: string[]; contactId?: string; goal?: string }) {
+  async create(
+    userId: string,
+    dto: { uploadIds: string[]; contactId?: string; goal?: string; userContext?: string },
+  ) {
     if (!dto.uploadIds || dto.uploadIds.length === 0) {
       throw new BadRequestException('At least one upload is required');
     }
@@ -28,6 +31,7 @@ export class AnalysesService {
         userId,
         contactId: dto.contactId ?? null,
         status: 'PENDING',
+        userContext: dto.userContext?.trim() || null,
         uploads: { connect: dto.uploadIds.map((id) => ({ id })) },
       },
     });
@@ -60,7 +64,9 @@ export class AnalysesService {
       include: {
         messages: { orderBy: { orderIndex: 'asc' } },
         replies: { orderBy: [{ tone: 'asc' }, { intensity: 'asc' }] },
-        contact: { select: { id: true, displayName: true, platform: true } },
+        contact: {
+          select: { id: true, displayName: true, platform: true, notes: true, aiMemory: true },
+        },
       },
     });
 
@@ -104,7 +110,7 @@ export class AnalysesService {
   async regenerateReplies(userId: string, analysisId: string) {
     const analysis = await this.prisma.analysis.findUnique({
       where: { id: analysisId },
-      include: { messages: { orderBy: { orderIndex: 'asc' } } },
+      include: { messages: { orderBy: { orderIndex: 'asc' } }, contact: true },
     });
 
     if (!analysis) throw new NotFoundException();
@@ -118,7 +124,7 @@ export class AnalysesService {
       text: m.text,
     }));
 
-    // Same contact history the processor uses, so a regenerated set is as
+    // The same context the processor assembles, so a regenerated set is as
     // well-informed as the original.
     const history = analysis.contactId
       ? (
@@ -156,7 +162,13 @@ export class AnalysesService {
         recommendedAction: analysis.recommendedAction as any,
       } as any,
       lastMessages,
-      history,
+      {
+        history,
+        userContext: analysis.userContext,
+        contactNotes: analysis.contact?.notes,
+        contactName: analysis.contact?.displayName,
+        memory: (analysis.contact?.aiMemory as any) ?? null,
+      },
     );
 
     const valid = (result.replies ?? []).filter((r) => r.text?.trim());

@@ -1,6 +1,6 @@
 import { Controller, Get, Post, Patch, Delete, Body, Param, Query, UseGuards } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
-import { IsString, IsOptional } from 'class-validator';
+import { IsString, IsOptional, IsArray, MaxLength } from 'class-validator';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { ContactsService } from './contacts.service';
@@ -14,7 +14,16 @@ class CreateContactDto {
 class UpdateContactDto {
   @IsOptional() @IsString() displayName?: string;
   @IsOptional() @IsString() platform?: string;
-  @IsOptional() @IsString() notes?: string;
+  @IsOptional() @IsString() @MaxLength(8000) notes?: string;
+}
+
+/** Each list replaces the stored one, so the user can prune what the model learned. */
+class UpdateMemoryDto {
+  @IsOptional() @IsArray() @IsString({ each: true }) facts?: string[];
+  @IsOptional() @IsArray() @IsString({ each: true }) interests?: string[];
+  @IsOptional() @IsArray() @IsString({ each: true }) insideJokes?: string[];
+  @IsOptional() @IsArray() @IsString({ each: true }) openThreads?: string[];
+  @IsOptional() @IsArray() @IsString({ each: true }) avoid?: string[];
 }
 
 @ApiTags('contacts')
@@ -42,6 +51,11 @@ export class ContactsController {
   @Patch(':id')
   update(@CurrentUser() user: any, @Param('id') id: string, @Body() dto: UpdateContactDto) {
     return this.contactsService.update(user.id, id, dto);
+  }
+
+  @Patch(':id/memory')
+  updateMemory(@CurrentUser() user: any, @Param('id') id: string, @Body() dto: UpdateMemoryDto) {
+    return this.contactsService.updateMemory(user.id, id, dto);
   }
 
   @Patch(':id/archive')

@@ -15,11 +15,29 @@ export interface User {
   createdAt: string;
 }
 
+/** What the model has learned about a contact across every scan. */
+export interface ContactMemory {
+  facts: string[];
+  interests: string[];
+  insideJokes: string[];
+  openThreads: string[];
+  avoid: string[];
+}
+
+export const MEMORY_SECTIONS = [
+  { key: 'insideJokes', label: 'Inside jokes', emoji: '😏' },
+  { key: 'openThreads', label: 'Open threads', emoji: '🧵' },
+  { key: 'facts', label: 'Facts', emoji: '📌' },
+  { key: 'interests', label: 'Interests', emoji: '✨' },
+  { key: 'avoid', label: 'Avoid', emoji: '🚫' },
+] as const;
+
 export interface Contact {
   id: string;
   displayName: string;
   platform?: string;
   notes?: string;
+  aiMemory?: ContactMemory | null;
   status: 'ACTIVE' | 'ARCHIVED';
   currentVibeScore?: number;
   lastActivityAt?: string;
@@ -34,6 +52,8 @@ export type RiskLevel = 'LOW' | 'MEDIUM' | 'HIGH';
 export interface Analysis {
   id: string;
   status: AnalysisStatus;
+  /** Notes the user typed before scanning. */
+  userContext?: string;
   language?: string;
   overallScore?: number;
   vibeScore?: number;
@@ -49,7 +69,7 @@ export interface Analysis {
   failureCode?: string;
   createdAt: string;
   completedAt?: string;
-  contact?: { id: string; displayName: string; platform?: string };
+  contact?: { id: string; displayName: string; platform?: string; notes?: string; aiMemory?: ContactMemory | null };
   messages?: AnalysisMessage[];
   replies?: SuggestedReply[];
 }

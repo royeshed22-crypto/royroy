@@ -1,6 +1,6 @@
 import { Controller, Get, Post, Body, Param, UseGuards } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags, ApiOperation } from '@nestjs/swagger';
-import { IsArray, IsOptional, IsString, IsUUID, IsNumber, IsIn } from 'class-validator';
+import { IsArray, IsOptional, IsString, IsUUID, IsNumber, IsIn, MaxLength } from 'class-validator';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { AnalysesService } from './analyses.service';
@@ -10,6 +10,8 @@ class CreateAnalysisDto {
   @IsArray() uploadIds: string[];
   @IsOptional() @IsUUID() contactId?: string;
   @IsOptional() @IsString() goal?: string;
+  /** What a photo showed, what a voice note said, background on the relationship. */
+  @IsOptional() @IsString() @MaxLength(4000) userContext?: string;
 }
 
 class SubmitFeedbackDto {

@@ -66,6 +66,8 @@ export const contactsApi = {
   create: (data: any) => api.post<{ data: any }>('/contacts', data).then(unwrap),
   get: (id: string) => api.get<{ data: any }>(`/contacts/${id}`).then(unwrap),
   update: (id: string, data: any) => api.patch<{ data: any }>(`/contacts/${id}`, data).then(unwrap),
+  updateMemory: (id: string, memory: Record<string, string[]>) =>
+    api.patch<{ data: any }>(`/contacts/${id}/memory`, memory).then(unwrap),
   archive: (id: string) => api.patch<{ data: any }>(`/contacts/${id}/archive`).then(unwrap),
 };
 
@@ -83,8 +85,8 @@ export const uploadsApi = {
 };
 
 export const analysesApi = {
-  create: (uploadIds: string[], contactId?: string) =>
-    api.post<{ data: any }>('/analyses', { uploadIds, contactId }).then(unwrap),
+  create: (uploadIds: string[], contactId?: string, userContext?: string) =>
+    api.post<{ data: any }>('/analyses', { uploadIds, contactId, userContext }).then(unwrap),
   list: () => api.get<{ data: any[] }>('/analyses').then(unwrap),
   get: (id: string) => api.get<{ data: any }>(`/analyses/${id}`).then(unwrap),
   getStatus: (id: string) => api.get<{ data: any }>(`/analyses/${id}/status`).then(unwrap),

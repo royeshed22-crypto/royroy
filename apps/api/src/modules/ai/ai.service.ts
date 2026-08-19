@@ -14,10 +14,36 @@ export interface ConversationHistoryEntry {
   summary?: string;
 }
 
+/** Knowledge about a contact that accumulates across every scan. */
+export interface ContactMemory {
+  facts: string[];
+  interests: string[];
+  insideJokes: string[];
+  openThreads: string[];
+  avoid: string[];
+}
+
+export const EMPTY_MEMORY: ContactMemory = {
+  facts: [], interests: [], insideJokes: [], openThreads: [], avoid: [],
+};
+
+/** Everything known about the person, assembled for one call. */
+export interface AnalysisContext {
+  history?: ConversationHistoryEntry[];
+  memory?: ContactMemory | null;
+  /** Notes the user typed for this specific scan. */
+  userContext?: string | null;
+  /** Long-lived notes the user keeps on this contact. */
+  contactNotes?: string | null;
+  contactName?: string;
+}
+
 export interface AnalysisResult {
   language: string;
   /** Name read off the chat header, when the screenshot shows one. */
   contactName?: string | null;
+  /** New knowledge to fold into the contact's memory. */
+  memoryUpdates?: Partial<ContactMemory>;
   extractedMessages: Array<{ speaker: 'self' | 'other'; text: string; orderIndex: number }>;
   summary: string;
   scores: { overall: number; vibe: number; interest: number; confidence: number };
@@ -128,29 +154,111 @@ export class AiService {
     throw lastErr;
   }
 
-  /** Renders past analyses into a compact block the model can read. */
-  private formatHistory(history: ConversationHistoryEntry[], contactName?: string): string {
-    if (!history?.length) return '';
+  /**
+   * Assembles everything known about the contact into one block. Ordered so the
+   * user's own words come first — they are the highest-signal input and the
+   * only thing the screenshots cannot convey.
+   */
+  private buildContext(ctx: AnalysisContext = {}): string {
+    const who = ctx.contactName ?? 'THIS PERSON';
+    const parts: string[] = [];
 
-    const lines = history.map((h) => {
-      const when = h.date.toLocaleDateString('en-GB');
-      const scores = `vibe ${h.vibeScore ?? '?'}, interest ${h.interestScore ?? '?'}`;
-      return `- ${when} (${scores}, stage: ${h.stage ?? 'unknown'}): ${h.summary ?? 'no summary'}`;
-    });
+    if (ctx.userContext?.trim()) {
+      parts.push(`=== WHAT THE USER TOLD YOU ABOUT THIS MOMENT ===
+${ctx.userContext.trim()}`);
+    }
 
-    return `
+    if (ctx.contactNotes?.trim()) {
+      parts.push(`=== THE USER'S NOTES ON ${who} ===
+${ctx.contactNotes.trim()}`);
+    }
 
-=== EARLIER CONVERSATIONS WITH ${contactName ?? 'THIS PERSON'} ===
-Oldest first. Use this to judge direction, not just the current screenshot.
-${lines.join('\n')}
-`;
+    const m = ctx.memory;
+    if (m) {
+      const section = (label: string, items?: string[]) =>
+        items?.length ? `${label}:\n${items.map((i) => `  - ${i}`).join('\n')}` : '';
+
+      const blocks = [
+        section('Facts', m.facts),
+        section('Interests', m.interests),
+        section('Inside jokes', m.insideJokes),
+        section('Open threads', m.openThreads),
+        section('Avoid these topics', m.avoid),
+      ].filter(Boolean);
+
+      if (blocks.length) {
+        parts.push(`=== WHAT YOU ALREADY KNOW ABOUT ${who} ===
+${blocks.join('\n')}`);
+      }
+    }
+
+    if (ctx.history?.length) {
+      const lines = ctx.history.map((h) => {
+        const when = h.date.toLocaleDateString('en-GB');
+        const scores = `vibe ${h.vibeScore ?? '?'}, interest ${h.interestScore ?? '?'}`;
+        return `  - ${when} (${scores}, stage: ${h.stage ?? 'unknown'}): ${h.summary ?? 'no summary'}`;
+      });
+      parts.push(`=== EARLIER CONVERSATIONS WITH ${who} ===
+Oldest first. Judge direction from this, not just the current screenshot.
+${lines.join('\n')}`);
+    }
+
+    return parts.length ? `\n\n${parts.join('\n\n')}\n` : '';
+  }
+
+  /**
+   * Reads memory back out of a Prisma Json column, tolerating null, a legacy
+   * shape, or anything malformed rather than throwing mid-analysis.
+   */
+  parseMemory(raw: unknown): ContactMemory | null {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+
+    const src = raw as Record<string, unknown>;
+    const list = (v: unknown): string[] =>
+      Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : [];
+
+    const parsed: ContactMemory = {
+      facts: list(src.facts),
+      interests: list(src.interests),
+      insideJokes: list(src.insideJokes),
+      openThreads: list(src.openThreads),
+      avoid: list(src.avoid),
+    };
+
+    const isEmpty = Object.values(parsed).every((v) => v.length === 0);
+    return isEmpty ? null : parsed;
+  }
+
+  /**
+   * Folds new findings into existing memory, skipping duplicates and keeping
+   * each list bounded so the prompt doesn't grow without limit.
+   */
+  mergeMemory(existing: ContactMemory | null, updates?: Partial<ContactMemory>): ContactMemory {
+    const base: ContactMemory = { ...EMPTY_MEMORY, ...(existing ?? {}) };
+    if (!updates) return base;
+
+    const LIMITS: Record<keyof ContactMemory, number> = {
+      facts: 30, interests: 20, insideJokes: 15, openThreads: 12, avoid: 10,
+    };
+
+    for (const key of Object.keys(LIMITS) as Array<keyof ContactMemory>) {
+      const incoming = (updates[key] ?? []).map((s) => String(s).trim()).filter(Boolean);
+      if (!incoming.length) continue;
+
+      const seen = new Set(base[key].map((s) => s.toLowerCase()));
+      const fresh = incoming.filter((s) => !seen.has(s.toLowerCase()));
+
+      // Newest last, and trim from the front so recent knowledge survives.
+      base[key] = [...base[key], ...fresh].slice(-LIMITS[key]);
+    }
+
+    return base;
   }
 
   async analyzeConversation(
     imagePaths: string[],
     userPreferences: { communicationStyle?: string; goals?: string[]; language?: string },
-    history: ConversationHistoryEntry[] = [],
-    contactName?: string,
+    context: AnalysisContext = {},
   ): Promise<AnalysisResult> {
     const imageParts = await Promise.all(
       imagePaths.map(async (imagePath) => {
@@ -168,8 +276,8 @@ ${lines.join('\n')}
       : '';
 
     try {
-      const historyBlock = this.formatHistory(history, contactName);
-      const prompt = `${SYSTEM_PROMPT}${userContext}${historyBlock}\n\nAnalyze this dating conversation from ${imagePaths.length} screenshot(s). Read the name from the chat header, extract all messages, and provide a full analysis. Return valid JSON only.`;
+      const contextBlock = this.buildContext(context);
+      const prompt = `${SYSTEM_PROMPT}${userContext}${contextBlock}\n\nAnalyze this dating conversation from ${imagePaths.length} screenshot(s). Read the name from the chat header, extract all messages, and provide a full analysis. Return valid JSON only.`;
 
       const result = await this.generate('analyzeConversation', (model) =>
         model.generateContent([prompt, ...imageParts]),
@@ -198,7 +306,7 @@ ${lines.join('\n')}
   async generateReplies(
     analysisResult: AnalysisResult,
     lastMessages: Array<{ speaker: string; text: string }>,
-    history: ConversationHistoryEntry[] = [],
+    context: AnalysisContext = {},
   ): Promise<ReplyResult> {
     const lastFew = lastMessages
       .slice(-6)
@@ -207,7 +315,7 @@ ${lines.join('\n')}
 
     try {
       const prompt = `${REPLY_SYSTEM_PROMPT}
-${this.formatHistory(history, analysisResult.contactName ?? undefined)}
+${this.buildContext({ ...context, contactName: context.contactName ?? analysisResult.contactName ?? undefined })}
 CONVERSATION CONTEXT:
 Last messages:
 ${lastFew}
