@@ -12,9 +12,10 @@ dist/
 .env.*
 !.env.example
 
-# Uploaded screenshots (user data)
-uploads/
-!uploads/.gitkeep
+# Stored screenshots (user data). Anchored to the storage path only — a bare
+# `uploads/` also matches src/modules/uploads and silently drops the source.
+/apps/api/uploads/
+/uploads/
 
 # Logs
 *.log

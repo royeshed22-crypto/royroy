@@ -1,22 +1,29 @@
 'use client';
-import { useEffect } from 'react';
+import { useEffect, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import { useAuthStore } from '@/store/auth.store';
 
 export default function RootPage() {
   const router = useRouter();
-  const { token, onboardingComplete, initSession } = useAuthStore();
+  const hydrated = useAuthStore((s) => s.hydrated);
+  const token = useAuthStore((s) => s.token);
+  const initSession = useAuthStore((s) => s.initSession);
+  const routed = useRef(false);
 
   useEffect(() => {
-    if (!token) {
-      initSession().then(() => {
-        const { onboardingComplete } = useAuthStore.getState();
-        router.replace(onboardingComplete ? '/home' : '/onboarding');
-      });
-    } else {
+    // Wait for persisted state, otherwise a returning user looks brand new
+    // here and gets issued a second anonymous account.
+    if (!hydrated || routed.current) return;
+    routed.current = true;
+
+    const go = () => {
+      const { onboardingComplete } = useAuthStore.getState();
       router.replace(onboardingComplete ? '/home' : '/onboarding');
-    }
-  }, []);
+    };
+
+    if (token) go();
+    else initSession().then(go).catch(() => { routed.current = false; });
+  }, [hydrated, token]);
 
   return (
     <div className="min-h-screen bg-surface-900 flex items-center justify-center">

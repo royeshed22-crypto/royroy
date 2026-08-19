@@ -1,5 +1,5 @@
 'use client';
-import { useCallback } from 'react';
+import { useCallback, useEffect, useMemo } from 'react';
 import { useDropzone } from 'react-dropzone';
 import { ImagePlus, X } from 'lucide-react';
 import { cn } from '@/lib/utils';
@@ -25,6 +25,11 @@ export function Dropzone({ files, onChange, maxFiles = 10 }: DropzoneProps) {
     maxFiles,
     maxSize: 20 * 1024 * 1024,
   });
+
+  // Created once per file rather than on every render, and released when the
+  // selection changes — otherwise each render leaks another blob URL.
+  const previews = useMemo(() => files.map((f) => URL.createObjectURL(f)), [files]);
+  useEffect(() => () => previews.forEach(URL.revokeObjectURL), [previews]);
 
   const remove = (idx: number) => {
     const next = files.filter((_, i) => i !== idx);
@@ -62,7 +67,7 @@ export function Dropzone({ files, onChange, maxFiles = 10 }: DropzoneProps) {
             <div key={idx} className="relative rounded-xl overflow-hidden bg-surface-700">
               {/* eslint-disable-next-line @next/next/no-img-element */}
               <img
-                src={URL.createObjectURL(file)}
+                src={previews[idx]}
                 alt={`screenshot ${idx + 1}`}
                 className="w-full h-auto object-contain"
               />

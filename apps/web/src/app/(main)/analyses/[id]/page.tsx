@@ -1,5 +1,5 @@
 'use client';
-import { useEffect, useState, useCallback, useRef } from 'react';
+import { useEffect, useState, useRef } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import { ArrowLeft, CheckCircle, XCircle, Loader2, AlertTriangle, RefreshCw } from 'lucide-react';
 import { motion } from 'framer-motion';
@@ -47,21 +47,32 @@ export default function AnalysisPage() {
     }
   };
 
-  const poll = useCallback(async () => {
-    try {
-      const data = await analysesApi.get(id);
-      setAnalysis(data);
-      if (data.status === 'PENDING' || data.status === 'PROCESSING') {
-        setTimeout(poll, 3000);
-      }
-    } catch {
-      // silent
-    } finally {
-      setLoading(false);
-    }
-  }, [id]);
+  useEffect(() => {
+    // Cancelled on unmount so navigating away stops the timer instead of
+    // leaving a polling chain running against a dead component.
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout>;
 
-  useEffect(() => { poll(); }, [poll]);
+    const poll = async () => {
+      try {
+        const data = await analysesApi.get(id);
+        if (cancelled) return;
+
+        setAnalysis(data);
+        if (data.status === 'PENDING' || data.status === 'PROCESSING') {
+          timer = setTimeout(poll, 3000);
+        }
+      } catch {
+        // Transient failure; the next tick retries.
+        if (!cancelled) timer = setTimeout(poll, 5000);
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    };
+
+    poll();
+    return () => { cancelled = true; clearTimeout(timer); };
+  }, [id]);
 
   if (loading) {
     return (

@@ -10,13 +10,19 @@ interface AuthState {
   deviceId: string;
   onboardingComplete: boolean;
   isLoading: boolean;
+  /** False until persisted state has been read back from localStorage. */
+  hydrated: boolean;
 
+  setHydrated: () => void;
   initSession: () => Promise<void>;
   fetchUser: () => Promise<void>;
   updateUser: (data: Partial<User>) => Promise<void>;
   setOnboardingComplete: (v: boolean) => void;
   reset: () => void;
 }
+
+/** Shared across callers so a session is only ever created once. */
+let inFlightSession: Promise<void> | null = null;
 
 export const useAuthStore = create<AuthState>()(
   persist(
@@ -26,20 +32,31 @@ export const useAuthStore = create<AuthState>()(
       deviceId: uuidv4(),
       onboardingComplete: false,
       isLoading: false,
+      hydrated: false,
+
+      setHydrated: () => set({ hydrated: true }),
 
       initSession: async () => {
-        if (get().token) return;
-        set({ isLoading: true });
-        try {
-          const result = await authApi.createSession(get().deviceId);
-          if (typeof window !== 'undefined') {
-            localStorage.setItem('dugrizz_token', result.token);
+        // Guard against concurrent callers: two overlapping calls would each
+        // mint a session and the second would orphan the first user's data.
+        if (get().token || inFlightSession) return inFlightSession ?? undefined;
+
+        inFlightSession = (async () => {
+          set({ isLoading: true });
+          try {
+            const result = await authApi.createSession(get().deviceId);
+            if (typeof window !== 'undefined') {
+              localStorage.setItem('dugrizz_token', result.token);
+            }
+            set({ token: result.token });
+            await get().fetchUser();
+          } finally {
+            set({ isLoading: false });
+            inFlightSession = null;
           }
-          set({ token: result.token });
-          await get().fetchUser();
-        } finally {
-          set({ isLoading: false });
-        }
+        })();
+
+        return inFlightSession;
       },
 
       fetchUser: async () => {
@@ -71,6 +88,9 @@ export const useAuthStore = create<AuthState>()(
         if (state?.token && typeof window !== 'undefined') {
           localStorage.setItem('dugrizz_token', state.token);
         }
+        // Signals that routing guards may now trust `token`. Without this they
+        // read the pre-hydration null, bounce to "/", and loop.
+        state?.setHydrated();
       },
     },
   ),
