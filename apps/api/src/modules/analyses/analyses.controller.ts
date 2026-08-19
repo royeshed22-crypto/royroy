@@ -71,6 +71,12 @@ export class AnalysesController {
     return this.analysesService.submitFeedback(user.id, id, dto.rating, dto.comment);
   }
 
+  @Post(':id/reanalyze')
+  @ApiOperation({ summary: 'Re-run the analysis from the stored conversation' })
+  reanalyze(@CurrentUser() user: any, @Param('id') id: string) {
+    return this.analysesService.reanalyze(user.id, id);
+  }
+
   @Post(':id/replies/regenerate')
   @ApiOperation({ summary: 'Regenerate suggested replies for an analysis' })
   regenerateReplies(@CurrentUser() user: any, @Param('id') id: string) {

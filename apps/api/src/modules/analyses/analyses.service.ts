@@ -134,6 +134,90 @@ export class AnalysesService {
   }
 
   /**
+   * Re-runs the full analysis from the stored timeline, no screenshots needed.
+   *
+   * The conversation already lives on the relationship, so scores can always be
+   * recomputed. This rescues analyses that completed without them — early
+   * imports only backfilled history — and lets any result be refreshed once
+   * memory has grown.
+   */
+  async reanalyze(userId: string, analysisId: string) {
+    const analysis = await this.prisma.analysis.findUnique({
+      where: { id: analysisId },
+      include: { contact: true },
+    });
+
+    if (!analysis) throw new NotFoundException();
+    if (analysis.userId !== userId) throw new ForbiddenException();
+    if (!analysis.contactId) {
+      throw new BadRequestException('This analysis is not linked to a contact');
+    }
+
+    const messageCount = await this.prisma.conversationMessage.count({
+      where: { contactId: analysis.contactId },
+    });
+    if (messageCount === 0) {
+      throw new BadRequestException('There are no messages saved for this conversation yet');
+    }
+
+    const context = await this.contextBuilder.build({
+      contactId: analysis.contactId,
+      userContext: analysis.userContext,
+    });
+
+    const user = await this.prisma.user.findUnique({ where: { id: userId } });
+    const result = await this.aiService.analyzeConversation(context.text, {
+      communicationStyle: user?.communicationStyle,
+      language: analysis.language ?? 'he',
+    });
+
+    const repliesResult = await this.aiService.generateReplies(result, context.text);
+    const replies = (repliesResult.replies ?? []).filter((r) => r.text?.trim());
+
+    await this.prisma.$transaction(async (tx) => {
+      if (replies.length > 0) {
+        await tx.suggestedReply.deleteMany({ where: { analysisId } });
+        await tx.suggestedReply.createMany({
+          data: replies.map((r) => ({
+            analysisId,
+            userId,
+            text: r.text,
+            tone: r.tone as any,
+            intensity: Math.min(3, Math.max(1, Math.round(r.intensity ?? 2))),
+            riskLevel: r.riskLevel as any,
+            explanation: r.explanation,
+          })),
+        });
+      }
+
+      await tx.analysis.update({
+        where: { id: analysisId },
+        data: {
+          overallScore: result.scores.overall,
+          vibeScore: result.scores.vibe,
+          interestScore: result.scores.interest,
+          confidence: result.scores.confidence,
+          summary: result.summary,
+          conversationStage: result.conversationStage,
+          recommendedAction: result.recommendedAction as any,
+          communicationStyle: result.communicationStyle as any,
+          greenFlags: result.greenFlags,
+          redFlags: result.redFlags,
+          disclaimer: result.disclaimer,
+          completedAt: new Date(),
+        },
+      });
+
+      await tx.contact.update({
+        where: { id: analysis.contactId! },
+        data: { currentVibeScore: result.scores.vibe, lastActivityAt: new Date() },
+      });
+    });
+
+    return this.findOne(userId, analysisId);
+  }
+
+  /**
    * Re-runs reply generation for an already-completed analysis, replacing any
    * replies it currently has. Used when the first generation hit a transient
    * model outage.

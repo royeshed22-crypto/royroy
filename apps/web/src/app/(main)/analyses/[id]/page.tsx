@@ -32,7 +32,27 @@ export default function AnalysisPage() {
   const [analysis, setAnalysis] = useState<Analysis | null>(null);
   const [loading, setLoading] = useState(true);
   const [regenerating, setRegenerating] = useState(false);
+  const [reanalyzing, setReanalyzing] = useState(false);
   const regenLock = useRef(false);
+  const reanalyzeLock = useRef(false);
+
+  /** An analysis that completed without scores never ran the scoring stage. */
+  const scored = analysis?.overallScore != null;
+
+  const handleReanalyze = async () => {
+    if (reanalyzeLock.current) return;
+    reanalyzeLock.current = true;
+    setReanalyzing(true);
+    try {
+      setAnalysis(await analysesApi.reanalyze(id));
+      toast.success('Analysis updated');
+    } catch (err: any) {
+      toast.error(err?.response?.data?.error?.message ?? 'Could not analyse. Try again.');
+    } finally {
+      setReanalyzing(false);
+      reanalyzeLock.current = false;
+    }
+  };
 
   const handleRegenerate = async () => {
     // Ref rather than state: setState is async, so rapid clicks can slip through
@@ -165,18 +185,39 @@ export default function AnalysisPage() {
             </Card>
           )}
 
-          {/* Scores */}
-          <div className="flex justify-around py-4">
-            {[
-              { label: 'Overall', value: analysis.overallScore, sub: 'score' },
-              { label: 'Vibe',    value: analysis.vibeScore,    sub: 'energy' },
-              { label: 'Interest', value: analysis.interestScore, sub: 'level' },
-            ].map(({ label, value, sub }) => (
-              <div key={label} className="relative flex items-center justify-center">
-                <ScoreRing score={value ?? 0} size={100} strokeWidth={7} label={label} sublabel={sub} />
-              </div>
-            ))}
-          </div>
+          {/* Scores. Null is not zero — an analysis that never ran should say so
+              rather than showing three zeros, which reads as a damning verdict. */}
+          {scored ? (
+            <div className="flex justify-around py-4">
+              {[
+                { label: 'Overall', value: analysis.overallScore, sub: 'score' },
+                { label: 'Vibe',    value: analysis.vibeScore,    sub: 'energy' },
+                { label: 'Interest', value: analysis.interestScore, sub: 'level' },
+              ].map(({ label, value, sub }) => (
+                <div key={label} className="relative flex items-center justify-center">
+                  <ScoreRing score={value ?? 0} size={100} strokeWidth={7} label={label} sublabel={sub} />
+                </div>
+              ))}
+            </div>
+          ) : (
+            <Card className="flex flex-col items-center gap-3 py-8 text-center">
+              <p className="text-white/60 text-sm max-w-xs">
+                This one saved the conversation but never scored it.
+              </p>
+              <p className="text-white/35 text-xs max-w-xs">
+                The messages are all here, so it can be analysed without uploading
+                anything again.
+              </p>
+              <button
+                onClick={handleReanalyze}
+                disabled={reanalyzing}
+                className="flex items-center gap-2 px-4 py-2.5 rounded-xl brand-btn text-sm disabled:opacity-50"
+              >
+                <RefreshCw size={14} className={reanalyzing ? 'animate-spin' : ''} />
+                {reanalyzing ? 'Analyzing…' : 'Run the analysis'}
+              </button>
+            </Card>
+          )}
 
           {/* Stage badge */}
           {analysis.conversationStage && (
@@ -185,8 +226,9 @@ export default function AnalysisPage() {
             </div>
           )}
 
-          {/* Summary */}
-          {analysis.summary && (
+          {/* Summary. Skipped when unscored, where it holds a bookkeeping line
+              from the import rather than a read of the conversation. */}
+          {scored && analysis.summary && (
             <Card>
               <p className="text-white/80 text-sm leading-relaxed">{analysis.summary}</p>
             </Card>

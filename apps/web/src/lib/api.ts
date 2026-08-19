@@ -100,6 +100,9 @@ export const analysesApi = {
   list: () => api.get<{ data: any[] }>('/analyses').then(unwrap),
   get: (id: string) => api.get<{ data: any }>(`/analyses/${id}`).then(unwrap),
   getStatus: (id: string) => api.get<{ data: any }>(`/analyses/${id}/status`).then(unwrap),
+  /** Re-runs scoring and replies from the stored conversation, no new uploads. */
+  reanalyze: (id: string) =>
+    api.post<{ data: any }>(`/analyses/${id}/reanalyze`).then(unwrap),
   regenerateReplies: (id: string) =>
     api.post<{ data: any[] }>(`/analyses/${id}/replies/regenerate`).then(unwrap),
   markCopied: (replyId: string) =>
