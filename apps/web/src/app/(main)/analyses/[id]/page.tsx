@@ -1,6 +1,7 @@
 'use client';
 import { useEffect, useState, useRef } from 'react';
 import { useParams, useRouter } from 'next/navigation';
+import Link from 'next/link';
 import {
   ArrowLeft, CheckCircle, XCircle, Loader2, AlertTriangle, RefreshCw, Sparkles,
 } from 'lucide-react';
@@ -141,7 +142,63 @@ export default function AnalysisPage() {
         </Card>
       )}
 
-      {analysis.status === 'COMPLETED' && (
+      {/* An import has no scores or replies — just report what landed. */}
+      {analysis.status === 'COMPLETED' && analysis.isImport && (
+        <div className="flex flex-col gap-5 px-5 pb-8">
+          <Card className="flex flex-col items-center gap-4 py-8 text-center">
+            <div className="w-14 h-14 rounded-2xl bg-brand-gradient flex items-center justify-center">
+              <CheckCircle size={26} className="text-white" />
+            </div>
+            <div>
+              <h3 className="text-white font-bold text-lg">Conversation saved</h3>
+              <p className="text-white/50 text-sm mt-1">
+                {analysis.contact?.displayName} now has history behind them.
+              </p>
+            </div>
+
+            <div className="grid grid-cols-3 gap-3 w-full max-w-sm pt-2">
+              {[
+                { label: 'Read', value: analysis.messagesFound ?? 0 },
+                { label: 'New', value: analysis.messagesNew ?? 0 },
+                { label: 'Total', value: analysis.totalMessages ?? 0 },
+              ].map(({ label, value }) => (
+                <div key={label} className="flex flex-col items-center gap-0.5">
+                  <span className="text-2xl font-black text-white tabular-nums">{value}</span>
+                  <span className="text-[10px] text-white/40 uppercase tracking-wide">{label}</span>
+                </div>
+              ))}
+            </div>
+
+            {(analysis.messagesFound ?? 0) > (analysis.messagesNew ?? 0) && (
+              <p className="text-white/35 text-xs max-w-xs">
+                {(analysis.messagesFound ?? 0) - (analysis.messagesNew ?? 0)} messages
+                were already known and got merged rather than duplicated.
+              </p>
+            )}
+          </Card>
+
+          {analysis.messages && analysis.messages.length > 0 && (
+            <ConversationView messages={analysis.messages} />
+          )}
+
+          {analysis.contact && (
+            <MemoryPanel
+              contactId={analysis.contact.id}
+              contactName={analysis.contact.displayName}
+              memory={analysis.contact.aiMemory}
+              defaultOpen
+            />
+          )}
+
+          <Link href="/scan">
+            <button className="w-full brand-btn py-3.5 text-base">
+              Scan new messages
+            </button>
+          </Link>
+        </div>
+      )}
+
+      {analysis.status === 'COMPLETED' && !analysis.isImport && (
         <div className="flex flex-col gap-5 px-5 pb-8">
           {/* Scores */}
           <div className="flex justify-around py-4">

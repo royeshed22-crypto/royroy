@@ -1,14 +1,29 @@
-﻿import { Process, Processor } from '@nestjs/bull';
+import { Process, Processor } from '@nestjs/bull';
 import { Logger } from '@nestjs/common';
 import { Job } from 'bull';
 import { PrismaService } from '../../prisma/prisma.service';
-import {
-  AiService, AnalysisResult, ConversationHistoryEntry, ContactMemory, AnalysisContext,
-} from '../ai/ai.service';
+import { AiService, AnalysisResult } from '../ai/ai.service';
+import { ExtractorService } from '../ai/extractor.service';
+import { MemoryUpdaterService } from '../ai/memory-updater.service';
+import { ConversationService } from '../conversation/conversation.service';
+import { ContextBuilderService } from '../conversation/context-builder.service';
+import { RelationshipMemory } from '../ai/memory.types';
 
-/** Past analyses to feed back into the model as context. */
-const HISTORY_LIMIT = 5;
-
+/**
+ * Runs one scan end to end.
+ *
+ * The pipeline is deliberately staged so screenshots are read exactly once and
+ * never sent again:
+ *
+ *   1. extract   images -> messages
+ *   2. resolve   figure out which relationship this is
+ *   3. ingest    append to the timeline, collapsing screenshot overlap
+ *   4. context   assemble memory + a recent window, not the whole history
+ *   5. analyse   scores, flags, advice from text alone
+ *   6. remember  fold what changed into long-term memory
+ *   7. reply     nine suggestions, informed by all of the above
+ *   8. persist   everything in one transaction
+ */
 @Processor('analyses')
 export class AnalysesProcessor {
   private readonly logger = new Logger(AnalysesProcessor.name);
@@ -16,6 +31,10 @@ export class AnalysesProcessor {
   constructor(
     private prisma: PrismaService,
     private aiService: AiService,
+    private extractor: ExtractorService,
+    private memoryUpdater: MemoryUpdaterService,
+    private conversation: ConversationService,
+    private contextBuilder: ContextBuilderService,
   ) {}
 
   @Process('process')
@@ -38,29 +57,49 @@ export class AnalysesProcessor {
         throw new Error('No uploads found for analysis');
       }
 
-      const user = await this.prisma.user.findUnique({ where: { id: userId } });
-
-      // If the user already picked a contact, we can prime the model with
-      // everything we know up front. Otherwise we discover who this is from the
-      // screenshot and load their context before generating replies.
-      let contactId = analysis.contactId;
-      let context: AnalysisContext = {
-        userContext: analysis.userContext,
-        contactNotes: analysis.contact?.notes,
-        contactName: analysis.contact?.displayName,
-        memory: this.aiService.parseMemory(analysis.contact?.aiMemory),
-        history: contactId ? await this.loadHistory(contactId, analysisId) : [],
-      };
-
-      const result = await this.aiService.analyzeConversation(
+      // 1. Read the screenshots. This is the only step that touches images.
+      const extracted = await this.extractor.extractMany(
         analysis.uploads.map((u) => u.path),
-        {
-          communicationStyle: user?.communicationStyle,
-          goals: user?.goals,
-          language: user?.language,
-        },
-        context,
       );
+
+      // 2. Work out who this conversation is with.
+      const contactId =
+        analysis.contactId ??
+        (extracted.contactName
+          ? await this.resolveContact(userId, extracted.contactName)
+          : await this.resolveContact(userId, 'Unknown'));
+
+      if (!contactId) throw new Error('Could not resolve a contact for this analysis');
+
+      if (contactId !== analysis.contactId) {
+        this.logger.log(`Linked analysis ${analysisId} to contact ${contactId}`);
+      }
+
+      // 3. Merge into the timeline, dropping whatever overlapped.
+      const ingest = await this.conversation.ingest(userId, contactId, extracted.messages, {
+        analysisId,
+        source: analysis.isImport ? 'IMPORT' : 'SCREENSHOT',
+      });
+
+      // An import only backfills history; it does not need scores or replies.
+      if (analysis.isImport) {
+        await this.finishImport(analysisId, contactId, userId, ingest, extracted.language);
+        return;
+      }
+
+      // 4. Build a bounded context: memory plus a recent window, not everything.
+      const context = await this.contextBuilder.build({
+        contactId,
+        userContext: analysis.userContext,
+        userQuery: analysis.userContext,
+      });
+
+      // 5. Analyse from text. The images are already behind us.
+      const result = await this.aiService.analyzeConversation(context.text, {
+        communicationStyle: (await this.prisma.user.findUnique({ where: { id: userId } }))
+          ?.communicationStyle,
+        language: extracted.language,
+      });
 
       if (result.safetyDecision === 'block') {
         await this.prisma.analysis.update({
@@ -74,40 +113,37 @@ export class AnalysesProcessor {
         return;
       }
 
-      // Link to a contact using the name read off the chat header, so repeat
-      // scans of the same person accumulate into one thread automatically.
-      if (!contactId && result.contactName) {
-        contactId = await this.resolveContact(userId, result.contactName);
-        if (contactId) {
-          const contact = await this.prisma.contact.findUnique({ where: { id: contactId } });
-          context = {
-            ...context,
-            contactName: contact?.displayName,
-            contactNotes: contact?.notes,
-            memory: this.aiService.parseMemory(contact?.aiMemory),
-            history: await this.loadHistory(contactId, analysisId),
-          };
-          this.logger.log(`Linked analysis ${analysisId} to contact "${result.contactName}"`);
-        }
-      }
-
-      // Everything learned in this pass is available to the replies, so a
-      // callback can reference something said moments ago in the same chat.
-      const memory = this.aiService.mergeMemory(context.memory ?? null, result.memoryUpdates);
-
-      // Replies are generated before anything is marked COMPLETED - the client
-      // stops polling on that status, so writing it early surfaces an analysis
-      // with no replies attached.
-      const repliesResult = await this.aiService.generateReplies(
-        result,
-        result.extractedMessages ?? [],
-        { ...context, memory },
+      // 6. Update long-term memory from the messages that are actually new.
+      const contact = await this.prisma.contact.findUnique({ where: { id: contactId } });
+      const existingMemory = this.memoryUpdater.parse(contact?.aiMemory);
+      const update = await this.memoryUpdater.computeUpdate(
+        existingMemory,
+        ingest.added > 0
+          ? extracted.messages.slice(-ingest.added)
+          : extracted.messages.slice(-20),
+        { contactName: contact?.displayName, userContext: analysis.userContext },
       );
+      const memory = this.memoryUpdater.merge(existingMemory, update);
+
+      // 7. Replies see the updated memory, so a callback can reference
+      //    something learned moments ago in this same batch.
+      const withMemory = await this.contextBuilder.build({
+        contactId,
+        userContext: analysis.userContext,
+      });
+      const repliesResult = await this.aiService.generateReplies(result, withMemory.text);
       const replies = (repliesResult.replies ?? []).filter((r) => r.text?.trim());
 
-      await this.persistResult(analysisId, userId, contactId, result, replies, memory);
+      // 8. One transaction: a client polling for COMPLETED never sees a
+      //    half-written analysis.
+      await this.persistResult({
+        analysisId, userId, contactId, result, replies, memory,
+        stage: update?.stage, ingest, language: extracted.language,
+      });
 
-      this.logger.log(`Analysis ${analysisId} completed with ${replies.length} replies`);
+      this.logger.log(
+        `Analysis ${analysisId} done: +${ingest.added} messages, ${replies.length} replies`,
+      );
     } catch (err) {
       const attempts = job.opts.attempts ?? 1;
       const isFinalAttempt = job.attemptsMade + 1 >= attempts;
@@ -127,76 +163,90 @@ export class AnalysesProcessor {
     }
   }
 
+  /**
+   * A bulk import just records history and builds initial memory. There is
+   * nothing to reply to, so scoring is skipped.
+   */
+  private async finishImport(
+    analysisId: string,
+    contactId: string,
+    userId: string,
+    ingest: { found: number; added: number; duplicates: number; totalOnTimeline: number },
+    language: string,
+  ) {
+    const contact = await this.prisma.contact.findUnique({ where: { id: contactId } });
+    const existing = this.memoryUpdater.parse(contact?.aiMemory);
+
+    const recent = await this.prisma.conversationMessage.findMany({
+      where: { contactId },
+      orderBy: { orderIndex: 'desc' },
+      take: 60,
+      select: { speaker: true, text: true },
+    });
+
+    const update = await this.memoryUpdater.computeUpdate(existing, recent.reverse(), {
+      contactName: contact?.displayName,
+    });
+    const memory = this.memoryUpdater.merge(existing, update);
+
+    await this.prisma.$transaction(async (tx) => {
+      await tx.contact.update({
+        where: { id: contactId },
+        data: {
+          aiMemory: memory as any,
+          summary: memory.summary || undefined,
+          stage: (update?.stage?.toUpperCase() as any) ?? undefined,
+          lastActivityAt: new Date(),
+        },
+      });
+
+      await tx.analysis.update({
+        where: { id: analysisId },
+        data: {
+          status: 'COMPLETED',
+          contactId,
+          language,
+          summary: `Imported ${ingest.added} messages. The conversation history is now saved.`,
+          messagesFound: ingest.found,
+          messagesNew: ingest.added,
+          completedAt: new Date(),
+        },
+      });
+    });
+
+    this.logger.log(
+      `Import ${analysisId}: ${ingest.added} of ${ingest.found} messages added, ${ingest.totalOnTimeline} on timeline`,
+    );
+  }
+
   /** Finds an existing contact by name (case-insensitive) or creates one. */
   private async resolveContact(userId: string, rawName: string): Promise<string | null> {
-    const name = rawName.trim();
-    if (!name || name.length > 60) return null;
+    const name = rawName.trim().slice(0, 60);
+    if (!name) return null;
 
     const existing = await this.prisma.contact.findFirst({
       where: { userId, displayName: { equals: name, mode: 'insensitive' } },
     });
     if (existing) return existing.id;
 
-    const created = await this.prisma.contact.create({
-      data: { userId, displayName: name },
-    });
+    const created = await this.prisma.contact.create({ data: { userId, displayName: name } });
     return created.id;
   }
 
-  private async loadHistory(
-    contactId: string,
-    excludeAnalysisId: string,
-  ): Promise<ConversationHistoryEntry[]> {
-    const past = await this.prisma.analysis.findMany({
-      where: { contactId, status: 'COMPLETED', id: { not: excludeAnalysisId } },
-      orderBy: { createdAt: 'desc' },
-      take: HISTORY_LIMIT,
-      select: {
-        createdAt: true,
-        vibeScore: true,
-        interestScore: true,
-        conversationStage: true,
-        summary: true,
-      },
-    });
-
-    // Oldest first so the model reads the arc in order.
-    return past.reverse().map((p) => ({
-      date: p.createdAt,
-      vibeScore: p.vibeScore ?? undefined,
-      interestScore: p.interestScore ?? undefined,
-      stage: p.conversationStage ?? undefined,
-      summary: p.summary ?? undefined,
-    }));
-  }
-
-  /**
-   * Writes messages, replies, and the COMPLETED status in one transaction, so a
-   * client polling for completion never sees a half-populated analysis.
-   */
-  private async persistResult(
-    analysisId: string,
-    userId: string,
-    contactId: string | null,
-    result: AnalysisResult,
-    replies: AnalysisReplies,
-    memory: ContactMemory,
-  ) {
-    const messages = (result.extractedMessages ?? []).map((m, idx) => ({
-      analysisId,
-      speaker: m.speaker === 'self' ? 'SELF' : m.speaker === 'other' ? 'OTHER' : 'UNKNOWN',
-      text: m.text,
-      orderIndex: idx,
-      sentiment: result.messageAnalysis?.find((ma) => ma.orderIndex === m.orderIndex)?.sentiment ?? 'neutral',
-      score: result.messageAnalysis?.find((ma) => ma.orderIndex === m.orderIndex)?.score ?? null,
-      explanation: result.messageAnalysis?.find((ma) => ma.orderIndex === m.orderIndex)?.note ?? null,
-    }));
+  private async persistResult(args: {
+    analysisId: string;
+    userId: string;
+    contactId: string;
+    result: AnalysisResult;
+    replies: Array<{ tone: string; intensity?: number; text: string; riskLevel: string; explanation: string }>;
+    memory: RelationshipMemory;
+    stage?: string;
+    ingest: { found: number; added: number };
+    language: string;
+  }) {
+    const { analysisId, userId, contactId, result, replies, memory, stage, ingest, language } = args;
 
     await this.prisma.$transaction(async (tx) => {
-      if (messages.length > 0) {
-        await tx.analysisMessage.createMany({ data: messages as any });
-      }
-
       if (replies.length > 0) {
         await tx.suggestedReply.createMany({
           data: replies.map((r) => ({
@@ -216,7 +266,7 @@ export class AnalysesProcessor {
         data: {
           status: 'COMPLETED',
           contactId,
-          language: result.language,
+          language,
           overallScore: result.scores.overall,
           vibeScore: result.scores.vibe,
           interestScore: result.scores.interest,
@@ -228,21 +278,23 @@ export class AnalysesProcessor {
           greenFlags: result.greenFlags,
           redFlags: result.redFlags,
           disclaimer: result.disclaimer,
-          promptVersion: '2.0',
+          messagesFound: ingest.found,
+          messagesNew: ingest.added,
+          promptVersion: '3.0',
           completedAt: new Date(),
         },
       });
 
-      if (contactId) {
-        await tx.contact.update({
-          where: { id: contactId },
-          data: {
-            currentVibeScore: result.scores.vibe,
-            lastActivityAt: new Date(),
-            aiMemory: memory as any,
-          },
-        });
-      }
+      await tx.contact.update({
+        where: { id: contactId },
+        data: {
+          currentVibeScore: result.scores.vibe,
+          lastActivityAt: new Date(),
+          aiMemory: memory as any,
+          summary: memory.summary || undefined,
+          stage: (stage?.toUpperCase() as any) ?? undefined,
+        },
+      });
 
       await tx.user.update({
         where: { id: userId },
@@ -251,5 +303,3 @@ export class AnalysesProcessor {
     });
   }
 }
-
-type AnalysisReplies = Awaited<ReturnType<AiService['generateReplies']>>['replies'];

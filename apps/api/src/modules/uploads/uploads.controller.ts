@@ -20,6 +20,9 @@ const storage = diskStorage({
 
 const MAX_SIZE = 20 * 1024 * 1024;
 
+/** Backfilling an existing conversation can mean dozens of screenshots at once. */
+const MAX_FILES = 60;
+
 @ApiTags('uploads')
 @ApiBearerAuth()
 @UseGuards(JwtAuthGuard)
@@ -30,7 +33,7 @@ export class UploadsController {
   @Post()
   @ApiOperation({ summary: 'Upload conversation screenshots (max 10)' })
   @ApiConsumes('multipart/form-data')
-  @UseInterceptors(FilesInterceptor('files', 10, { storage }))
+  @UseInterceptors(FilesInterceptor('files', MAX_FILES, { storage }))
   async uploadFiles(
     @CurrentUser() user: any,
     @UploadedFiles() files: Express.Multer.File[],

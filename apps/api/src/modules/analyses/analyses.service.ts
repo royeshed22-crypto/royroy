@@ -4,6 +4,7 @@ import { Queue } from 'bull';
 import { PrismaService } from '../../prisma/prisma.service';
 import { UploadsService } from '../uploads/uploads.service';
 import { AiService } from '../ai/ai.service';
+import { ContextBuilderService } from '../conversation/context-builder.service';
 
 @Injectable()
 export class AnalysesService {
@@ -11,12 +12,16 @@ export class AnalysesService {
     private prisma: PrismaService,
     private uploadsService: UploadsService,
     private aiService: AiService,
+    private contextBuilder: ContextBuilderService,
     @InjectQueue('analyses') private analysesQueue: Queue,
   ) {}
 
   async create(
     userId: string,
-    dto: { uploadIds: string[]; contactId?: string; goal?: string; userContext?: string },
+    dto: {
+      uploadIds: string[]; contactId?: string; goal?: string;
+      userContext?: string; isImport?: boolean;
+    },
   ) {
     if (!dto.uploadIds || dto.uploadIds.length === 0) {
       throw new BadRequestException('At least one upload is required');
@@ -32,6 +37,7 @@ export class AnalysesService {
         contactId: dto.contactId ?? null,
         status: 'PENDING',
         userContext: dto.userContext?.trim() || null,
+        isImport: dto.isImport ?? false,
         uploads: { connect: dto.uploadIds.map((id) => ({ id })) },
       },
     });
@@ -62,17 +68,42 @@ export class AnalysesService {
     const analysis = await this.prisma.analysis.findUnique({
       where: { id: analysisId },
       include: {
-        messages: { orderBy: { orderIndex: 'asc' } },
         replies: { orderBy: [{ tone: 'asc' }, { intensity: 'asc' }] },
         contact: {
-          select: { id: true, displayName: true, platform: true, notes: true, aiMemory: true },
+          select: {
+            id: true, displayName: true, platform: true, notes: true,
+            aiMemory: true, stage: true, summary: true,
+          },
         },
       },
     });
 
     if (!analysis) throw new NotFoundException();
     if (analysis.userId !== userId) throw new ForbiddenException();
-    return analysis;
+
+    // Messages live on the relationship timeline now, not on the analysis. Show
+    // the recent window so the transcript reflects the conversation as a whole
+    // rather than only what this one scan happened to capture.
+    const messages = analysis.contactId
+      ? await this.prisma.conversationMessage.findMany({
+          where: { contactId: analysis.contactId },
+          orderBy: { orderIndex: 'desc' },
+          take: 60,
+          select: {
+            id: true, speaker: true, text: true, orderIndex: true,
+            sentAtRaw: true, sentiment: true, score: true, explanation: true,
+            sourceAnalysisId: true,
+          },
+        })
+      : [];
+
+    return {
+      ...analysis,
+      messages: messages.reverse(),
+      totalMessages: analysis.contactId
+        ? await this.prisma.conversationMessage.count({ where: { contactId: analysis.contactId } })
+        : 0,
+    };
   }
 
   async getStatus(userId: string, analysisId: string) {
@@ -110,7 +141,7 @@ export class AnalysesService {
   async regenerateReplies(userId: string, analysisId: string) {
     const analysis = await this.prisma.analysis.findUnique({
       where: { id: analysisId },
-      include: { messages: { orderBy: { orderIndex: 'asc' } }, contact: true },
+      include: { contact: true },
     });
 
     if (!analysis) throw new NotFoundException();
@@ -118,35 +149,16 @@ export class AnalysesService {
     if (analysis.status !== 'COMPLETED') {
       throw new BadRequestException('Analysis is not completed yet');
     }
+    if (!analysis.contactId) {
+      throw new BadRequestException('This analysis is not linked to a contact');
+    }
 
-    const lastMessages = analysis.messages.map((m) => ({
-      speaker: m.speaker === 'SELF' ? 'self' : 'other',
-      text: m.text,
-    }));
-
-    // The same context the processor assembles, so a regenerated set is as
-    // well-informed as the original.
-    const history = analysis.contactId
-      ? (
-          await this.prisma.analysis.findMany({
-            where: { contactId: analysis.contactId, status: 'COMPLETED', id: { not: analysisId } },
-            orderBy: { createdAt: 'desc' },
-            take: 5,
-            select: {
-              createdAt: true, vibeScore: true, interestScore: true,
-              conversationStage: true, summary: true,
-            },
-          })
-        )
-          .reverse()
-          .map((p) => ({
-            date: p.createdAt,
-            vibeScore: p.vibeScore ?? undefined,
-            interestScore: p.interestScore ?? undefined,
-            stage: p.conversationStage ?? undefined,
-            summary: p.summary ?? undefined,
-          }))
-      : [];
+    // Rebuilt from the same source the processor used, so a regenerated set is
+    // as well-informed as the original.
+    const context = await this.contextBuilder.build({
+      contactId: analysis.contactId,
+      userContext: analysis.userContext,
+    });
 
     const result = await this.aiService.generateReplies(
       {
@@ -161,14 +173,7 @@ export class AnalysesService {
         communicationStyle: analysis.communicationStyle as any,
         recommendedAction: analysis.recommendedAction as any,
       } as any,
-      lastMessages,
-      {
-        history,
-        userContext: analysis.userContext,
-        contactNotes: analysis.contact?.notes,
-        contactName: analysis.contact?.displayName,
-        memory: (analysis.contact?.aiMemory as any) ?? null,
-      },
+      context.text,
     );
 
     const valid = (result.replies ?? []).filter((r) => r.text?.trim());

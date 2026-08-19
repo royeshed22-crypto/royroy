@@ -6,12 +6,14 @@ import { AnalysesProcessor } from './analyses.processor';
 import { AuthModule } from '../auth/auth.module';
 import { AiModule } from '../ai/ai.module';
 import { UploadsModule } from '../uploads/uploads.module';
+import { ConversationModule } from '../conversation/conversation.module';
 
 @Module({
   imports: [
     AuthModule,
     AiModule,
     UploadsModule,
+    ConversationModule,
     BullModule.registerQueue({ name: 'analyses' }),
   ],
   providers: [AnalysesService, AnalysesProcessor],

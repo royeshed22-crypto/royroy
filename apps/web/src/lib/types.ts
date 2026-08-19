@@ -54,6 +54,12 @@ export interface Analysis {
   status: AnalysisStatus;
   /** Notes the user typed before scanning. */
   userContext?: string;
+  /** True when this run backfilled history rather than asking for replies. */
+  isImport?: boolean;
+  messagesFound?: number;
+  messagesNew?: number;
+  /** Size of the whole relationship timeline, not just this scan. */
+  totalMessages?: number;
   language?: string;
   overallScore?: number;
   vibeScore?: number;
