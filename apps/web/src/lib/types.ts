@@ -15,22 +15,66 @@ export interface User {
   createdAt: string;
 }
 
-/** What the model has learned about a contact across every scan. */
-export interface ContactMemory {
-  facts: string[];
-  interests: string[];
-  insideJokes: string[];
-  openThreads: string[];
-  avoid: string[];
+/** Something she stated outright. */
+export interface Fact {
+  text: string;
+  /** 1 when said verbatim, lower when paraphrased or implied. */
+  confidence: number;
+  since?: string;
 }
 
+/** The model's reading, deliberately kept apart from facts. */
+export interface Inference {
+  text: string;
+  confidence: number;
+  evidence: string[];
+  updatedAt?: string;
+}
+
+export interface RelationshipEvent {
+  event: string;
+  when?: string;
+  result?: string;
+  context?: string;
+}
+
+/** What the model has learned about a contact across every scan. */
+export interface ContactMemory {
+  summary: string;
+  facts: Fact[];
+  inferences: Inference[];
+  events: RelationshipEvent[];
+  patterns: { them: string[]; me: string[] };
+  insideJokes: string[];
+  interests: string[];
+  plans: string[];
+  unresolvedTopics: string[];
+  boundaries: string[];
+  currentDynamic: string;
+  updatedAt?: string;
+}
+
+/** Sections holding plain strings, which the panel can edit inline. */
 export const MEMORY_SECTIONS = [
   { key: 'insideJokes', label: 'Inside jokes', emoji: '😏' },
-  { key: 'openThreads', label: 'Open threads', emoji: '🧵' },
-  { key: 'facts', label: 'Facts', emoji: '📌' },
+  { key: 'unresolvedTopics', label: 'Open threads', emoji: '🧵' },
+  { key: 'plans', label: 'Plans', emoji: '📅' },
   { key: 'interests', label: 'Interests', emoji: '✨' },
-  { key: 'avoid', label: 'Avoid', emoji: '🚫' },
+  { key: 'boundaries', label: 'Avoid', emoji: '🚫' },
 ] as const;
+
+export type MemoryListKey = (typeof MEMORY_SECTIONS)[number]['key'];
+
+export const RELATIONSHIP_STAGES: Record<string, { label: string; emoji: string }> = {
+  NEW_MATCH: { label: 'New match', emoji: '👋' },
+  EARLY_CHAT: { label: 'Early chat', emoji: '💬' },
+  FLIRTING: { label: 'Flirting', emoji: '🔥' },
+  PLANNING_DATE: { label: 'Planning a date', emoji: '📅' },
+  DATING: { label: 'Dating', emoji: '💞' },
+  COOLING_OFF: { label: 'Cooling off', emoji: '🧊' },
+  ENDED: { label: 'Ended', emoji: '🚪' },
+  UNCLEAR: { label: 'Unclear', emoji: '🤷' },
+};
 
 export interface Contact {
   id: string;

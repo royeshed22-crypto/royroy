@@ -81,11 +81,10 @@ export class AnalysesProcessor {
         source: analysis.isImport ? 'IMPORT' : 'SCREENSHOT',
       });
 
-      // An import only backfills history; it does not need scores or replies.
-      if (analysis.isImport) {
-        await this.finishImport(analysisId, contactId, userId, ingest, extracted.language);
-        return;
-      }
+      // An import backfills history and then analyses like any other scan.
+      // Withholding the analysis made a successful import look like a failure,
+      // and having just absorbed the whole conversation is exactly when the
+      // read is worth the most.
 
       // 4. Build a bounded context: memory plus a recent window, not everything.
       const context = await this.contextBuilder.build({

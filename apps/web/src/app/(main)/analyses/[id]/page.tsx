@@ -13,6 +13,7 @@ import { ScoreRing } from '@/components/analysis/score-ring';
 import { ReplyToneCard } from '@/components/analysis/reply-tone-card';
 import { ConversationView } from '@/components/analysis/conversation-view';
 import { MemoryPanel } from '@/components/analysis/memory-panel';
+import { ErrorBoundary } from '@/components/ui/error-boundary';
 import { analysesApi } from '@/lib/api';
 import { Analysis, AnalysisStatus } from '@/lib/types';
 
@@ -178,16 +179,20 @@ export default function AnalysisPage() {
           </Card>
 
           {analysis.messages && analysis.messages.length > 0 && (
-            <ConversationView messages={analysis.messages} />
+            <ErrorBoundary label="The conversation">
+              <ConversationView messages={analysis.messages} />
+            </ErrorBoundary>
           )}
 
           {analysis.contact && (
-            <MemoryPanel
-              contactId={analysis.contact.id}
-              contactName={analysis.contact.displayName}
-              memory={analysis.contact.aiMemory}
-              defaultOpen
-            />
+            <ErrorBoundary label="What DUGRIZZ knows">
+              <MemoryPanel
+                contactId={analysis.contact.id}
+                contactName={analysis.contact.displayName}
+                memory={analysis.contact.aiMemory}
+                defaultOpen
+              />
+            </ErrorBoundary>
           )}
 
           <Link href="/scan">
@@ -244,16 +249,20 @@ export default function AnalysisPage() {
 
           {/* The extracted conversation */}
           {analysis.messages && analysis.messages.length > 0 && (
-            <ConversationView messages={analysis.messages} />
+            <ErrorBoundary label="The conversation">
+              <ConversationView messages={analysis.messages} />
+            </ErrorBoundary>
           )}
 
           {/* Accumulated knowledge about this person */}
           {analysis.contact && (
-            <MemoryPanel
-              contactId={analysis.contact.id}
-              contactName={analysis.contact.displayName}
-              memory={analysis.contact.aiMemory}
-            />
+            <ErrorBoundary label="What DUGRIZZ knows">
+              <MemoryPanel
+                contactId={analysis.contact.id}
+                contactName={analysis.contact.displayName}
+                memory={analysis.contact.aiMemory}
+              />
+            </ErrorBoundary>
           )}
 
           {/* Recommended action */}

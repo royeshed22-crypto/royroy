@@ -58,15 +58,15 @@ export class ContactsService {
   async updateMemory(
     userId: string,
     contactId: string,
-    updates: Partial<Record<'facts' | 'interests' | 'insideJokes' | 'openThreads' | 'avoid', string[]>>,
+    updates: Partial<
+      Record<'interests' | 'insideJokes' | 'plans' | 'unresolvedTopics' | 'boundaries', string[]>
+    >,
   ) {
     const contact = await this.prisma.contact.findUnique({ where: { id: contactId } });
     if (!contact) throw new NotFoundException();
     if (contact.userId !== userId) throw new ForbiddenException();
 
-    const current = (contact.aiMemory as any) ?? {
-      facts: [], interests: [], insideJokes: [], openThreads: [], avoid: [],
-    };
+    const current = (contact.aiMemory as any) ?? {};
 
     const merged = { ...current };
     for (const [key, value] of Object.entries(updates)) {
