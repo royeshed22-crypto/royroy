@@ -5,20 +5,40 @@ const api = axios.create({
   timeout: 30000,
 });
 
+/**
+ * The auth store owns the token and pushes it here. Keeping a second copy in
+ * localStorage let the two drift apart, which meant a cleared token could still
+ * be sent on the next request.
+ *
+ * These are plain module state rather than an import of the store, because the
+ * store imports this file and a cycle would leave one side undefined at load.
+ */
+let authToken: string | null = null;
+let onUnauthorized: (() => void) | null = null;
+
+export function setAuthToken(token: string | null) {
+  authToken = token;
+}
+
+export function setUnauthorizedHandler(fn: () => void) {
+  onUnauthorized = fn;
+}
+
 api.interceptors.request.use((config) => {
-  if (typeof window !== 'undefined') {
-    const token = localStorage.getItem('dugrizz_token');
-    if (token) config.headers.Authorization = `Bearer ${token}`;
-  }
+  if (authToken) config.headers.Authorization = `Bearer ${authToken}`;
   return config;
 });
 
 api.interceptors.response.use(
   (res: AxiosResponse) => res,
   (err: AxiosError<{ error: { message: string; code: string } }>) => {
-    if (err.response?.status === 401 && typeof window !== 'undefined') {
-      localStorage.removeItem('dugrizz_token');
-      window.location.href = '/';
+    // A 401 means the token is stale — most often because the API's JWT secret
+    // changed. Hand it to the store to clear and re-issue a session. Never
+    // navigate via window.location here: a hard reload with a token that is
+    // still persisted just 401s again on the next page, forever.
+    if (err.response?.status === 401) {
+      authToken = null;
+      onUnauthorized?.();
     }
     return Promise.reject(err);
   },

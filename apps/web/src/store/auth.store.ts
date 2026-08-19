@@ -1,7 +1,7 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import { v4 as uuidv4 } from 'uuid';
-import { authApi, usersApi } from '@/lib/api';
+import { authApi, usersApi, setAuthToken, setUnauthorizedHandler } from '@/lib/api';
 import { User } from '@/lib/types';
 
 interface AuthState {
@@ -18,6 +18,7 @@ interface AuthState {
   fetchUser: () => Promise<void>;
   updateUser: (data: Partial<User>) => Promise<void>;
   setOnboardingComplete: (v: boolean) => void;
+  clearSession: () => void;
   reset: () => void;
 }
 
@@ -45,9 +46,7 @@ export const useAuthStore = create<AuthState>()(
           set({ isLoading: true });
           try {
             const result = await authApi.createSession(get().deviceId);
-            if (typeof window !== 'undefined') {
-              localStorage.setItem('dugrizz_token', result.token);
-            }
+            setAuthToken(result.token);
             set({ token: result.token });
             await get().fetchUser();
           } finally {
@@ -64,7 +63,7 @@ export const useAuthStore = create<AuthState>()(
           const user = await usersApi.getMe();
           set({ user });
         } catch {
-          // silent
+          // A 401 here is handled by the interceptor; anything else is transient.
         }
       },
 
@@ -76,8 +75,19 @@ export const useAuthStore = create<AuthState>()(
 
       setOnboardingComplete: (v) => set({ onboardingComplete: v }),
 
+      /**
+       * Drops the credential but keeps deviceId and onboarding progress, so a
+       * rejected token results in a quiet re-auth rather than starting over.
+       */
+      clearSession: () => {
+        setAuthToken(null);
+        inFlightSession = null;
+        set({ token: null, user: null });
+      },
+
       reset: () => {
-        if (typeof window !== 'undefined') localStorage.removeItem('dugrizz_token');
+        setAuthToken(null);
+        inFlightSession = null;
         set({ token: null, user: null, onboardingComplete: false });
       },
     }),
@@ -85,9 +95,13 @@ export const useAuthStore = create<AuthState>()(
       name: 'dugrizz-auth',
       partialize: (s) => ({ token: s.token, deviceId: s.deviceId, onboardingComplete: s.onboardingComplete }),
       onRehydrateStorage: () => (state) => {
-        if (state?.token && typeof window !== 'undefined') {
-          localStorage.setItem('dugrizz_token', state.token);
-        }
+        // Hand the restored token to the axios layer before anything can fire
+        // a request with no Authorization header.
+        setAuthToken(state?.token ?? null);
+
+        // Leftover from when the token lived in two places; nothing reads it now.
+        if (typeof window !== 'undefined') localStorage.removeItem('dugrizz_token');
+
         // Signals that routing guards may now trust `token`. Without this they
         // read the pre-hydration null, bounce to "/", and loop.
         state?.setHydrated();
@@ -95,3 +109,14 @@ export const useAuthStore = create<AuthState>()(
     },
   ),
 );
+
+// A rejected token (usually because the API's JWT secret changed) clears the
+// session and immediately mints a new one, in place. No navigation, so this
+// cannot become a reload loop.
+setUnauthorizedHandler(() => {
+  const { token, clearSession, initSession } = useAuthStore.getState();
+  if (!token) return;
+
+  clearSession();
+  void initSession().catch(() => {});
+});
