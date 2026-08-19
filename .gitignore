@@ -1,19 +1,22 @@
+# Patterns here are anchored on purpose. A bare `uploads/` matches at any depth,
+# which once swallowed src/modules/uploads and pushed a repo that could not build.
+# Anything added below should name a path, not a bare directory name.
+
 # Dependencies
 node_modules/
 
 # Build output
-dist/
-.next/
+/apps/api/dist/
+/apps/web/.next/
 .turbo/
 *.tsbuildinfo
 
-# Secrets — never commit these
+# Secrets - never commit these
 .env
 .env.*
 !.env.example
 
-# Stored screenshots (user data). Anchored to the storage path only — a bare
-# `uploads/` also matches src/modules/uploads and silently drops the source.
+# Stored screenshots (user data)
 /apps/api/uploads/
 /uploads/
 

@@ -84,12 +84,25 @@ export const uploadsApi = {
   },
 };
 
+export const conversationApi = {
+  /** The full deduplicated timeline for a contact. */
+  getTimeline: (contactId: string) =>
+    api.get<{ data: any[] }>(`/contacts/${contactId}/conversation`).then(unwrap),
+  clear: (contactId: string) =>
+    api.delete<{ data: any }>(`/contacts/${contactId}/conversation`).then(unwrap),
+};
+
 export const analysesApi = {
-  create: (uploadIds: string[], contactId?: string, userContext?: string) =>
-    api.post<{ data: any }>('/analyses', { uploadIds, contactId, userContext }).then(unwrap),
+  create: (uploadIds: string[], contactId?: string, userContext?: string, isImport?: boolean) =>
+    api
+      .post<{ data: any }>('/analyses', { uploadIds, contactId, userContext, isImport })
+      .then(unwrap),
   list: () => api.get<{ data: any[] }>('/analyses').then(unwrap),
   get: (id: string) => api.get<{ data: any }>(`/analyses/${id}`).then(unwrap),
   getStatus: (id: string) => api.get<{ data: any }>(`/analyses/${id}/status`).then(unwrap),
+  /** Re-runs scoring and replies from the stored conversation, no new uploads. */
+  reanalyze: (id: string) =>
+    api.post<{ data: any }>(`/analyses/${id}/reanalyze`).then(unwrap),
   regenerateReplies: (id: string) =>
     api.post<{ data: any[] }>(`/analyses/${id}/replies/regenerate`).then(unwrap),
   markCopied: (replyId: string) =>

@@ -40,6 +40,23 @@ enum Speaker {
   UNKNOWN
 }
 
+enum MessageSource {
+  SCREENSHOT
+  MANUAL
+  IMPORT
+}
+
+enum RelationshipStage {
+  NEW_MATCH
+  EARLY_CHAT
+  FLIRTING
+  PLANNING_DATE
+  DATING
+  COOLING_OFF
+  ENDED
+  UNCLEAR
+}
+
 enum ReplyTone {
   PLAYFUL
   DIRECT
@@ -100,7 +117,15 @@ model Contact {
   notes            String?
   /// Facts the model accumulates across analyses — inside jokes, things she
   /// mentioned, running threads. Shape: see ContactMemory in ai.service.ts.
+  /// Structured knowledge accumulated across every scan. Shape: RelationshipMemory
+  /// in memory.types.ts. Older rows hold the earlier flat shape; the parser
+  /// upgrades them on read.
   aiMemory         Json?         @map("ai_memory")
+  /// Where the relationship currently stands. Inferred, never asserted from a
+  /// single exchange.
+  stage            RelationshipStage?
+  /// Prose summary of the relationship so far, rewritten only when it drifts.
+  summary          String?
   status           ContactStatus @default(ACTIVE)
   currentVibeScore Int?          @map("current_vibe_score")
   lastActivityAt   DateTime?     @map("last_activity_at")
@@ -110,8 +135,48 @@ model Contact {
 
   user     User       @relation(fields: [userId], references: [id], onDelete: Cascade)
   analyses Analysis[]
+  messages ConversationMessage[]
 
   @@map("contacts")
+}
+
+/// The canonical, deduplicated timeline for one relationship. Messages live here
+/// rather than on an Analysis so overlapping screenshots collapse into a single
+/// continuous conversation.
+model ConversationMessage {
+  id         String   @id @default(uuid())
+  contactId  String   @map("contact_id")
+  userId     String   @map("user_id")
+
+  speaker    Speaker
+  text       String
+  /// Position in the reconstructed conversation. Gaps are fine; only order matters.
+  orderIndex Int      @map("order_index")
+
+  /// Timestamp shown in the chat, when the screenshot exposed one.
+  sentAt     DateTime? @map("sent_at")
+  /// Raw timestamp text as read, e.g. "15:52" or "Yesterday".
+  sentAtRaw  String?   @map("sent_at_raw")
+
+  source          MessageSource @default(SCREENSHOT)
+  sourceAnalysisId String?      @map("source_analysis_id")
+
+  /// Normalised speaker+text digest, kept for inspection and seam matching.
+  /// Deliberately NOT unique: short replies like "חחח" recur legitimately, and
+  /// a uniqueness constraint would silently drop them.
+  fingerprint String
+
+  sentiment   String?
+  score       Int?
+  explanation String?
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  contact Contact @relation(fields: [contactId], references: [id], onDelete: Cascade)
+
+  @@index([contactId, orderIndex])
+  @@index([contactId, fingerprint])
+  @@map("conversation_messages")
 }
 
 model Upload {
@@ -139,6 +204,12 @@ model Analysis {
   /// What the user typed before scanning: what a photo showed, what a voice
   /// note said, anything the screenshots can't convey on their own.
   userContext       String?        @map("user_context")
+  /// True when this run was a bulk backfill of an existing conversation rather
+  /// than a normal "what do I reply" scan.
+  isImport          Boolean        @default(false) @map("is_import")
+  /// Extraction outcome, surfaced to the user as "11 new, 7 already known".
+  messagesFound     Int?           @map("messages_found")
+  messagesNew       Int?           @map("messages_new")
   language          String?
   overallScore      Int?           @map("overall_score")
   vibeScore         Int?           @map("vibe_score")
@@ -157,31 +228,12 @@ model Analysis {
   createdAt         DateTime       @default(now()) @map("created_at")
   completedAt       DateTime?      @map("completed_at")
 
-  user     User              @relation(fields: [userId], references: [id], onDelete: Cascade)
-  contact  Contact?          @relation(fields: [contactId], references: [id])
+  user     User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  contact  Contact?         @relation(fields: [contactId], references: [id])
   uploads  Upload[]
-  messages AnalysisMessage[]
   replies  SuggestedReply[]
 
   @@map("analyses")
-}
-
-model AnalysisMessage {
-  id           String   @id @default(uuid())
-  analysisId   String   @map("analysis_id")
-  speaker      Speaker
-  text         String
-  orderIndex   Int      @map("order_index")
-  score        Int?
-  sentiment    String?
-  explanation  String?
-  flags        Json?
-  createdAt    DateTime @default(now()) @map("created_at")
-
-  analysis Analysis @relation(fields: [analysisId], references: [id], onDelete: Cascade)
-
-  @@unique([analysisId, orderIndex])
-  @@map("analysis_messages")
 }
 
 model SuggestedReply {

@@ -10,6 +10,7 @@ import { toast } from 'sonner';
 import { contactsApi } from '@/lib/api';
 import { Contact } from '@/lib/types';
 import { MemoryPanel } from '@/components/analysis/memory-panel';
+import { ErrorBoundary } from '@/components/ui/error-boundary';
 
 export default function ContactDetailPage() {
   const { id } = useParams<{ id: string }>();
@@ -92,13 +93,15 @@ export default function ContactDetailPage() {
       </Link>
 
       {/* Everything learned across every scan, editable so a wrong fact can go */}
-      <MemoryPanel
-        contactId={contact.id}
-        contactName={contact.displayName}
-        memory={contact.aiMemory}
-        defaultOpen
-        onChange={(m) => setContact((c) => (c ? { ...c, aiMemory: m } : c))}
-      />
+      <ErrorBoundary label="What DUGRIZZ knows">
+        <MemoryPanel
+          contactId={contact.id}
+          contactName={contact.displayName}
+          memory={contact.aiMemory}
+          defaultOpen
+          onChange={(m) => setContact((c) => (c ? { ...c, aiMemory: m } : c))}
+        />
+      </ErrorBoundary>
 
       {/* Long-lived notes the user keeps themselves */}
       <div className="flex flex-col gap-2">

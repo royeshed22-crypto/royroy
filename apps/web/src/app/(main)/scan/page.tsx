@@ -3,7 +3,7 @@ import { useState, useRef, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { toast } from 'sonner';
 import { motion, AnimatePresence } from 'framer-motion';
-import { ScanLine, Check, Sparkles } from 'lucide-react';
+import { ScanLine, Check, Sparkles, History } from 'lucide-react';
 import { Dropzone } from '@/components/upload/dropzone';
 import { uploadsApi, analysesApi, contactsApi } from '@/lib/api';
 import { cn } from '@/lib/utils';
@@ -16,12 +16,19 @@ const PHASE_TEXT: Record<Exclude<Phase, 'idle'>, string> = {
   analyzing: 'Reading the conversation',
 };
 
+const IMPORT_PHASE_TEXT: Record<Exclude<Phase, 'idle'>, string> = {
+  uploading: 'Uploading screenshots',
+  queuing: 'Queueing the import',
+  analyzing: 'Reading and merging messages',
+};
+
 const PHASE_ORDER: Array<Exclude<Phase, 'idle'>> = ['uploading', 'queuing', 'analyzing'];
 
 export default function ScanPage() {
   const [files, setFiles] = useState<File[]>([]);
   const [contactName, setContactName] = useState('');
   const [context, setContext] = useState('');
+  const [mode, setMode] = useState<'scan' | 'import'>('scan');
   const [phase, setPhase] = useState<Phase>('idle');
   const [progress, setProgress] = useState(0);
   const router = useRouter();
@@ -52,7 +59,12 @@ export default function ScanPage() {
         contactId = contact.id;
       }
 
-      const analysis = await analysesApi.create(uploadIds, contactId, context.trim() || undefined);
+      const analysis = await analysesApi.create(
+        uploadIds,
+        contactId,
+        context.trim() || undefined,
+        mode === 'import',
+      );
 
       setPhase('analyzing');
       router.push(`/analyses/${analysis.id}`);
@@ -71,12 +83,56 @@ export default function ScanPage() {
   return (
     <div className="flex flex-col gap-6 p-5 pt-12 animate-fade-in">
       <div>
-        <h1 className="text-2xl font-black text-white">Scan a conversation</h1>
-        <p className="text-white/50 text-sm mt-1">Upload 1–10 screenshots to analyze</p>
+        <h1 className="text-2xl font-black text-white">
+          {mode === 'scan' ? 'Scan a conversation' : 'Import a conversation'}
+        </h1>
+        <p className="text-white/50 text-sm mt-1">
+          {mode === 'scan'
+            ? 'Upload screenshots and get replies'
+            : 'Backfill an existing chat so DUGRIZZ knows the whole story'}
+        </p>
       </div>
 
+      {/* Import exists because most people start mid-relationship. Backfilling
+          once means every later scan reads against real history. */}
+      <div className={cn('relative flex rounded-xl bg-black/25 p-1', busy && 'opacity-40 pointer-events-none')}>
+        {(['scan', 'import'] as const).map((m) => (
+          <button
+            key={m}
+            onClick={() => setMode(m)}
+            disabled={busy}
+            className={cn(
+              'relative flex-1 py-2 text-sm font-medium rounded-lg transition-colors duration-200 z-10',
+              mode === m ? 'text-surface-900' : 'text-white/50 hover:text-white/80',
+            )}
+          >
+            {mode === m && (
+              <motion.span
+                layoutId="scan-mode"
+                className="absolute inset-0 rounded-lg bg-white -z-10"
+                transition={{ type: 'spring', stiffness: 400, damping: 32 }}
+              />
+            )}
+            {m === 'scan' ? 'New messages' : 'Import history'}
+          </button>
+        ))}
+      </div>
+
+      {mode === 'import' && (
+        <div className="glass-card border-brand-500/20 bg-brand-500/5 p-3.5 flex gap-2.5">
+          <History size={15} className="text-brand-400 mt-0.5 shrink-0" />
+          <div className="text-xs text-white/60 leading-relaxed">
+            Upload as much of the chat as you have, oldest first. Overlapping
+            screenshots are fine — repeated messages get merged automatically.
+            <span className="block mt-1 text-white/40">
+              This only saves the history. No replies are generated.
+            </span>
+          </div>
+        </div>
+      )}
+
       <div className={cn('transition-opacity duration-300', busy && 'opacity-40 pointer-events-none')}>
-        <Dropzone files={files} onChange={setFiles} />
+        <Dropzone files={files} onChange={setFiles} maxFiles={mode === 'import' ? 60 : 10} />
       </div>
 
       <div className={cn('flex flex-col gap-5 transition-opacity duration-300', busy && 'opacity-40 pointer-events-none')}>
@@ -157,7 +213,7 @@ export default function ScanPage() {
                       done ? 'text-white/40' : active ? 'text-white font-medium' : 'text-white/25',
                     )}
                   >
-                    {PHASE_TEXT[p]}
+                    {(mode === 'import' ? IMPORT_PHASE_TEXT : PHASE_TEXT)[p]}
                   </span>
 
                   {active && p === 'uploading' && (
@@ -208,14 +264,16 @@ export default function ScanPage() {
           {busy ? (
             <>
               <span className="h-4 w-4 border-2 border-white/40 border-t-white rounded-full animate-spin" />
-              {phase === 'uploading' ? `Uploading ${progress}%` : 'Analyzing'}
+              {phase === 'uploading'
+                ? `Uploading ${progress}%`
+                : mode === 'import' ? 'Importing' : 'Analyzing'}
             </>
           ) : (
             <>
-              <ScanLine size={18} />
+              {mode === 'import' ? <History size={18} /> : <ScanLine size={18} />}
               {files.length > 0
-                ? `Analyze ${files.length} screenshot${files.length > 1 ? 's' : ''}`
-                : 'Analyze'}
+                ? `${mode === 'import' ? 'Import' : 'Analyze'} ${files.length} screenshot${files.length > 1 ? 's' : ''}`
+                : mode === 'import' ? 'Import' : 'Analyze'}
             </>
           )}
         </span>

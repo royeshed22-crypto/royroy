@@ -17,13 +17,17 @@ class UpdateContactDto {
   @IsOptional() @IsString() @MaxLength(8000) notes?: string;
 }
 
-/** Each list replaces the stored one, so the user can prune what the model learned. */
+/**
+ * Each list replaces the stored one, so the user can prune what the model
+ * learned. Only the plain-string lists are editable; facts and inferences carry
+ * confidence the UI cannot re-derive, so they stay model-owned.
+ */
 class UpdateMemoryDto {
-  @IsOptional() @IsArray() @IsString({ each: true }) facts?: string[];
   @IsOptional() @IsArray() @IsString({ each: true }) interests?: string[];
   @IsOptional() @IsArray() @IsString({ each: true }) insideJokes?: string[];
-  @IsOptional() @IsArray() @IsString({ each: true }) openThreads?: string[];
-  @IsOptional() @IsArray() @IsString({ each: true }) avoid?: string[];
+  @IsOptional() @IsArray() @IsString({ each: true }) plans?: string[];
+  @IsOptional() @IsArray() @IsString({ each: true }) unresolvedTopics?: string[];
+  @IsOptional() @IsArray() @IsString({ each: true }) boundaries?: string[];
 }
 
 @ApiTags('contacts')
