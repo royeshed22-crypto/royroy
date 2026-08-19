@@ -1,13 +1,17 @@
 'use client';
 import { useEffect, useState, useRef } from 'react';
 import { useParams, useRouter } from 'next/navigation';
-import { ArrowLeft, CheckCircle, XCircle, Loader2, AlertTriangle, RefreshCw } from 'lucide-react';
+import {
+  ArrowLeft, CheckCircle, XCircle, Loader2, AlertTriangle, RefreshCw, Sparkles,
+} from 'lucide-react';
 import { motion } from 'framer-motion';
 import { toast } from 'sonner';
 import { Card } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { ScoreRing } from '@/components/analysis/score-ring';
 import { ReplyToneCard } from '@/components/analysis/reply-tone-card';
+import { ConversationView } from '@/components/analysis/conversation-view';
+import { MemoryPanel } from '@/components/analysis/memory-panel';
 import { analysesApi } from '@/lib/api';
 import { Analysis, AnalysisStatus } from '@/lib/types';
 
@@ -164,6 +168,35 @@ export default function AnalysisPage() {
             <Card>
               <p className="text-white/80 text-sm leading-relaxed">{analysis.summary}</p>
             </Card>
+          )}
+
+          {/* What the user said the screenshots couldn't show */}
+          {analysis.userContext && (
+            <Card className="border-brand-500/20 bg-brand-500/5">
+              <div className="flex items-center gap-1.5 mb-1.5">
+                <Sparkles size={12} className="text-brand-400" />
+                <span className="text-brand-300 text-[11px] font-medium uppercase tracking-wide">
+                  Your context
+                </span>
+              </div>
+              <p className="text-white/70 text-xs leading-relaxed whitespace-pre-wrap">
+                {analysis.userContext}
+              </p>
+            </Card>
+          )}
+
+          {/* The extracted conversation */}
+          {analysis.messages && analysis.messages.length > 0 && (
+            <ConversationView messages={analysis.messages} />
+          )}
+
+          {/* Accumulated knowledge about this person */}
+          {analysis.contact && (
+            <MemoryPanel
+              contactId={analysis.contact.id}
+              contactName={analysis.contact.displayName}
+              memory={analysis.contact.aiMemory}
+            />
           )}
 
           {/* Recommended action */}

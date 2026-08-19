@@ -1,8 +1,10 @@
-import { Process, Processor } from '@nestjs/bull';
+﻿import { Process, Processor } from '@nestjs/bull';
 import { Logger } from '@nestjs/common';
 import { Job } from 'bull';
 import { PrismaService } from '../../prisma/prisma.service';
-import { AiService, AnalysisResult, ConversationHistoryEntry } from '../ai/ai.service';
+import {
+  AiService, AnalysisResult, ConversationHistoryEntry, ContactMemory, AnalysisContext,
+} from '../ai/ai.service';
 
 /** Past analyses to feed back into the model as context. */
 const HISTORY_LIMIT = 5;
@@ -38,10 +40,17 @@ export class AnalysesProcessor {
 
       const user = await this.prisma.user.findUnique({ where: { id: userId } });
 
-      // If the user already picked a contact, we can prime the model with their
-      // history up front. Otherwise we discover who this is from the screenshot.
+      // If the user already picked a contact, we can prime the model with
+      // everything we know up front. Otherwise we discover who this is from the
+      // screenshot and load their context before generating replies.
       let contactId = analysis.contactId;
-      let history = contactId ? await this.loadHistory(contactId, analysisId) : [];
+      let context: AnalysisContext = {
+        userContext: analysis.userContext,
+        contactNotes: analysis.contact?.notes,
+        contactName: analysis.contact?.displayName,
+        memory: this.aiService.parseMemory(analysis.contact?.aiMemory),
+        history: contactId ? await this.loadHistory(contactId, analysisId) : [],
+      };
 
       const result = await this.aiService.analyzeConversation(
         analysis.uploads.map((u) => u.path),
@@ -50,8 +59,7 @@ export class AnalysesProcessor {
           goals: user?.goals,
           language: user?.language,
         },
-        history,
-        analysis.contact?.displayName,
+        context,
       );
 
       if (result.safetyDecision === 'block') {
@@ -71,22 +79,33 @@ export class AnalysesProcessor {
       if (!contactId && result.contactName) {
         contactId = await this.resolveContact(userId, result.contactName);
         if (contactId) {
-          history = await this.loadHistory(contactId, analysisId);
+          const contact = await this.prisma.contact.findUnique({ where: { id: contactId } });
+          context = {
+            ...context,
+            contactName: contact?.displayName,
+            contactNotes: contact?.notes,
+            memory: this.aiService.parseMemory(contact?.aiMemory),
+            history: await this.loadHistory(contactId, analysisId),
+          };
           this.logger.log(`Linked analysis ${analysisId} to contact "${result.contactName}"`);
         }
       }
 
-      // Replies are generated before anything is marked COMPLETED — the client
+      // Everything learned in this pass is available to the replies, so a
+      // callback can reference something said moments ago in the same chat.
+      const memory = this.aiService.mergeMemory(context.memory ?? null, result.memoryUpdates);
+
+      // Replies are generated before anything is marked COMPLETED - the client
       // stops polling on that status, so writing it early surfaces an analysis
       // with no replies attached.
       const repliesResult = await this.aiService.generateReplies(
         result,
         result.extractedMessages ?? [],
-        history,
+        { ...context, memory },
       );
       const replies = (repliesResult.replies ?? []).filter((r) => r.text?.trim());
 
-      await this.persistResult(analysisId, userId, contactId, result, replies);
+      await this.persistResult(analysisId, userId, contactId, result, replies, memory);
 
       this.logger.log(`Analysis ${analysisId} completed with ${replies.length} replies`);
     } catch (err) {
@@ -161,6 +180,7 @@ export class AnalysesProcessor {
     contactId: string | null,
     result: AnalysisResult,
     replies: AnalysisReplies,
+    memory: ContactMemory,
   ) {
     const messages = (result.extractedMessages ?? []).map((m, idx) => ({
       analysisId,
@@ -216,7 +236,11 @@ export class AnalysesProcessor {
       if (contactId) {
         await tx.contact.update({
           where: { id: contactId },
-          data: { currentVibeScore: result.scores.vibe, lastActivityAt: new Date() },
+          data: {
+            currentVibeScore: result.scores.vibe,
+            lastActivityAt: new Date(),
+            aiMemory: memory as any,
+          },
         });
       }
 

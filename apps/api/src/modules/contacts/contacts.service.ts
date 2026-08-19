@@ -51,6 +51,36 @@ export class ContactsService {
     return this.prisma.contact.update({ where: { id: contactId }, data });
   }
 
+  /**
+   * Replaces the listed memory categories. Lets the user delete something the
+   * model got wrong, which matters because memory feeds every future reply.
+   */
+  async updateMemory(
+    userId: string,
+    contactId: string,
+    updates: Partial<Record<'facts' | 'interests' | 'insideJokes' | 'openThreads' | 'avoid', string[]>>,
+  ) {
+    const contact = await this.prisma.contact.findUnique({ where: { id: contactId } });
+    if (!contact) throw new NotFoundException();
+    if (contact.userId !== userId) throw new ForbiddenException();
+
+    const current = (contact.aiMemory as any) ?? {
+      facts: [], interests: [], insideJokes: [], openThreads: [], avoid: [],
+    };
+
+    const merged = { ...current };
+    for (const [key, value] of Object.entries(updates)) {
+      if (Array.isArray(value)) {
+        merged[key] = value.map((s) => String(s).trim()).filter(Boolean);
+      }
+    }
+
+    return this.prisma.contact.update({
+      where: { id: contactId },
+      data: { aiMemory: merged },
+    });
+  }
+
   async archive(userId: string, contactId: string) {
     const contact = await this.prisma.contact.findUnique({ where: { id: contactId } });
     if (!contact) throw new NotFoundException();

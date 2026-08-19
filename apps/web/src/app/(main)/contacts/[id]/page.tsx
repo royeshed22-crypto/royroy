@@ -6,20 +6,37 @@ import { ArrowLeft, ScanLine, ChevronRight } from 'lucide-react';
 import { Card } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
+import { toast } from 'sonner';
 import { contactsApi } from '@/lib/api';
 import { Contact } from '@/lib/types';
+import { MemoryPanel } from '@/components/analysis/memory-panel';
 
 export default function ContactDetailPage() {
   const { id } = useParams<{ id: string }>();
   const router = useRouter();
   const [contact, setContact] = useState<Contact | null>(null);
   const [loading, setLoading] = useState(true);
+  const [notes, setNotes] = useState('');
+  const [savingNotes, setSavingNotes] = useState(false);
 
   useEffect(() => {
     contactsApi.get(id)
-      .then(setContact)
+      .then((c) => { setContact(c); setNotes(c.notes ?? ''); })
       .finally(() => setLoading(false));
   }, [id]);
+
+  const saveNotes = async () => {
+    if (notes === (contact?.notes ?? '')) return;
+    setSavingNotes(true);
+    try {
+      await contactsApi.update(id, { notes });
+      setContact((c) => (c ? { ...c, notes } : c));
+    } catch {
+      toast.error('Could not save notes');
+    } finally {
+      setSavingNotes(false);
+    }
+  };
 
   if (loading) {
     return (
@@ -73,6 +90,32 @@ export default function ContactDetailPage() {
           New scan with {contact.displayName}
         </Button>
       </Link>
+
+      {/* Everything learned across every scan, editable so a wrong fact can go */}
+      <MemoryPanel
+        contactId={contact.id}
+        contactName={contact.displayName}
+        memory={contact.aiMemory}
+        defaultOpen
+        onChange={(m) => setContact((c) => (c ? { ...c, aiMemory: m } : c))}
+      />
+
+      {/* Long-lived notes the user keeps themselves */}
+      <div className="flex flex-col gap-2">
+        <label className="text-white/50 text-[11px] font-medium uppercase tracking-wide">
+          📝 Your notes
+        </label>
+        <textarea
+          value={notes}
+          onChange={(e) => setNotes(e.target.value)}
+          onBlur={saveNotes}
+          rows={3}
+          maxLength={8000}
+          placeholder="How you met, what's going on, anything you want factored in"
+          className="input-base resize-none text-sm leading-relaxed"
+        />
+        {savingNotes && <span className="text-brand-400 text-[10px]">Saving…</span>}
+      </div>
 
       {/* Analyses list */}
       {contact.analyses && contact.analyses.length > 0 && (
