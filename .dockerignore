@@ -1,10 +1,13 @@
+# Anchored on purpose. A bare `uploads` matches at any depth and once excluded
+# src/modules/uploads from the build context, breaking the image.
+
 **/node_modules
-**/dist
-**/.next
+/apps/api/dist
+/apps/web/.next
 **/.turbo
 
-# Stored screenshots — the path only, not the uploads source module.
-apps/api/uploads
+# Stored screenshots, not the uploads source module
+/apps/api/uploads
 
 .git
 .env
