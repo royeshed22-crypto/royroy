@@ -101,9 +101,34 @@ export class DedupService {
     return (2 * shared) / (x.length - 1 + (y.length - 1));
   }
 
-  /** Same speaker and same normalised text. */
+  /** Below this many characters, only an exact match is trusted. */
+  private static readonly SHORT_MESSAGE = 15;
+  /** Similarity required to call two longer messages the same. */
+  private static readonly SEAM_SIMILARITY = 0.95;
+  /** Fraction of a run that must agree for the seam to be accepted. */
+  private static readonly RUN_AGREEMENT = 0.8;
+  /** At or above this length, a run may carry a few mismatches. */
+  private static readonly FORGIVING_RUN = 3;
+
+  /**
+   * Whether two messages are the same one read twice.
+   *
+   * Short messages demand an exact match, because "כן" and "לא" score highly on
+   * any similarity measure without being remotely the same. Longer messages
+   * allow a little slack, since the model does not transcribe an image
+   * identically every time and a strict comparison there misses real seams.
+   */
   private isSameMessage(a: { speaker: string; text: string }, b: ExtractedMessage): boolean {
-    return a.speaker === b.speaker && this.normalize(a.text) === this.normalize(b.text);
+    if (a.speaker !== b.speaker) return false;
+
+    const x = this.normalize(a.text);
+    const y = this.normalize(b.text);
+    if (x === y) return true;
+
+    const shortest = Math.min(x.length, y.length);
+    if (shortest < DedupService.SHORT_MESSAGE) return false;
+
+    return this.similarity(x, y) >= DedupService.SEAM_SIMILARITY;
   }
 
   /**
@@ -111,10 +136,11 @@ export class DedupService {
    * incoming messages are a re-read of known history.
    *
    * Aligns the tail of the timeline with the head of the batch and takes the
-   * longest run that agrees. Matching is exact on normalised text rather than
-   * fuzzy: short chat messages are often 90% similar without being the same
-   * message ("כן" / "כן!" / "לא"), and a false seam silently swallows real
-   * messages. Normalisation already absorbs the OCR drift fuzziness was for.
+   * longest run that agrees. Runs of three or more tolerate a minority of
+   * mismatches: re-reading the same screenshot can split a message differently
+   * or garble one line, and demanding a perfect run there means the seam is
+   * missed and the entire screenshot lands again as new. Shorter runs must
+   * agree completely, since there is not enough evidence to absorb an error.
    */
   private findOverlap(existing: StoredMessage[], incoming: ExtractedMessage[]): number {
     if (!existing.length || !incoming.length) return 0;
@@ -123,15 +149,25 @@ export class DedupService {
 
     for (let run = maxRun; run >= 1; run--) {
       const tail = existing.slice(existing.length - run);
-      let matches = true;
 
+      let agreed = 0;
       for (let i = 0; i < run; i++) {
-        if (!this.isSameMessage(tail[i], incoming[i])) { matches = false; break; }
+        if (this.isSameMessage(tail[i], incoming[i])) agreed++;
       }
+
+      if (run >= DedupService.FORGIVING_RUN) {
+        // The first message must line up regardless; without a fixed anchor a
+        // partial score can drift the alignment by one and mangle the order.
+        const anchored = this.isSameMessage(tail[0], incoming[0]);
+        if (anchored && agreed / run >= DedupService.RUN_AGREEMENT) return run;
+        continue;
+      }
+
+      if (agreed !== run) continue;
 
       // A one-message seam on a very short message is coincidence more often
       // than overlap, so require some substance before trusting it alone.
-      if (matches && (run > 1 || incoming[0].text.trim().length >= 12)) return run;
+      if (run > 1 || incoming[0].text.trim().length >= 12) return run;
     }
 
     return 0;

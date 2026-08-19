@@ -151,6 +151,89 @@ describe('DedupService', () => {
       expect(r.duplicateCount).toBe(3);
     });
 
+    // The model does not transcribe an image identically every time, so a
+    // re-scan of known content must still find its seam.
+    describe('tolerating an inconsistent re-read', () => {
+      it('matches a run where one message came back garbled', () => {
+        const existing = store([
+          ['SELF', 'hey what are you up to tonight'],
+          ['OTHER', 'just got back from the gym actually'],
+          ['SELF', 'nice, want to get sushi thursday'],
+          ['OTHER', 'yes that sounds really good'],
+        ]);
+
+        // Third line re-read with a dropped word.
+        const r = svc.reconcile(existing, extract([
+          ['SELF', 'hey what are you up to tonight'],
+          ['OTHER', 'just got back from the gym actually'],
+          ['SELF', 'nice want to get sushi on thursday'],
+          ['OTHER', 'yes that sounds really good'],
+        ]));
+
+        expect(r.newMessages).toHaveLength(0);
+        expect(r.overlapDetected).toBe(true);
+      });
+
+      it('never fuzzy-matches a short reply', () => {
+        // Slack is only extended to longer text. "כן" and "לא" are similar by
+        // any character measure and must never be treated as the same message.
+        const r = svc.reconcile(store([['OTHER', 'כן']]), extract([['OTHER', 'לא']]));
+        expect(r.newMessages.map((m) => m.text)).toEqual(['לא']);
+      });
+
+      it('treats a contradicted last message as no seam at all', () => {
+        // The stored tail says one thing and the screenshot says another, so
+        // there is no trustworthy join. Keeping both beats silently dropping one.
+        const existing = store([
+          ['SELF', 'so are you coming or not'],
+          ['OTHER', 'כן'],
+        ]);
+
+        const r = svc.reconcile(existing, extract([
+          ['SELF', 'so are you coming or not'],
+          ['OTHER', 'לא'],
+        ]));
+
+        expect(r.overlapDetected).toBe(false);
+        expect(r.newMessages).toHaveLength(2);
+      });
+
+      it('does not accept a run whose first message disagrees', () => {
+        const existing = store([
+          ['SELF', 'completely unrelated opening line'],
+          ['OTHER', 'second message that matches here'],
+          ['SELF', 'third message that matches here'],
+        ]);
+
+        const r = svc.reconcile(existing, extract([
+          ['SELF', 'something totally different entirely'],
+          ['OTHER', 'second message that matches here'],
+          ['SELF', 'third message that matches here'],
+        ]));
+
+        // Without an anchored first message the alignment cannot be trusted.
+        expect(r.newMessages.length).toBeGreaterThan(0);
+      });
+
+      it('rejects a run where too much disagrees', () => {
+        const existing = store([
+          ['SELF', 'first message here for testing'],
+          ['OTHER', 'second message here for testing'],
+          ['SELF', 'third message here for testing'],
+          ['OTHER', 'fourth message here for testing'],
+        ]);
+
+        const r = svc.reconcile(existing, extract([
+          ['SELF', 'first message here for testing'],
+          ['OTHER', 'completely different content now'],
+          ['SELF', 'another unrelated thing entirely'],
+          ['OTHER', 'nothing like the original here'],
+        ]));
+
+        expect(r.newMessages.length).toBeGreaterThanOrEqual(3);
+      });
+    });
+
     // A single upload is often many overlapping screenshots arriving as one
     // flat list, so the seam has to be found inside the batch as well.
     describe('overlap within a single batch', () => {

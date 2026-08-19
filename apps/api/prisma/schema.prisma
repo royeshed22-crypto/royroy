@@ -140,6 +140,23 @@ model Contact {
   @@map("contacts")
 }
 
+/// Transcription of one image, keyed by a hash of its bytes.
+///
+/// The model does not read the same screenshot identically twice - one pass can
+/// split a message the next pass merges - and that made deduplication
+/// non-deterministic, because a re-upload no longer lined up with what was
+/// stored. Caching by content hash makes an identical image always yield
+/// identical text, and saves the API call.
+model ExtractionCache {
+  /// SHA-256 of the file contents.
+  imageHash String   @id @map("image_hash")
+  /// The ExtractedConversation for this single image.
+  result    Json
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@map("extraction_cache")
+}
+
 /// The canonical, deduplicated timeline for one relationship. Messages live here
 /// rather than on an Analysis so overlapping screenshots collapse into a single
 /// continuous conversation.
